@@ -7,7 +7,7 @@ networks:
     driver: bridge
 
 x-python-base: &python-base
-  image: ghcr.io/melcore1/tradnex2:${IMAGE_TAG:-latest}
+  image: ghcr.io/melcore1/tradnex-v2:${IMAGE_TAG:-latest}
   env_file: .env
   environment:
     DATABASE_PATH: /data/tradnex.db

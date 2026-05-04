@@ -14,7 +14,7 @@ Two paths — Docker (with the dev override) or a Python venv. The venv path is 
 
 The override builds the image as `tradnex:dev`, bind-mounts your source tree (so edits reflect without rebuild), and runs the container as your host uid (default 1000) to avoid bind-mount permission issues. If your host uid differs, set `TRADNEX_UID` / `TRADNEX_GID` in `.env`.
 
-Without the override, `docker compose up` pulls `ghcr.io/melcore1/tradnex2:latest` from GHCR — the same path Dockge uses in production.
+Without the override, `docker compose up` pulls `ghcr.io/melcore1/tradnex-v2:latest` from GHCR — the same path Dockge uses in production.
 
 ### Python venv
 
@@ -37,7 +37,7 @@ With Docker:
 
 The backend is published as a single container image to GitHub Container Registry on every push to `main`:
 
-- Image: `ghcr.io/melcore1/tradnex2`
+- Image: `ghcr.io/melcore1/tradnex-v2`
 - Tags: `latest` (always points at most recent main) + `sha-<short>` (immutable per commit)
 - Platform: `linux/amd64`
 - Visibility: **public** — no auth needed to pull

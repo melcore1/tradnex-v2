@@ -1,5 +1,5 @@
 # TradNex 2 — TrueNAS Dockge stack
-# Pulled from ghcr.io/melcore1/tradnex2:latest.
+# Pulled from ghcr.io/melcore1/tradnex-v2:latest.
 #
 # To deploy:
 #   1. Dockge → Stacks → New Stack → paste this file
@@ -20,7 +20,7 @@ networks:
     driver: bridge
 
 x-python-base: &python-base
-  image: ghcr.io/melcore1/tradnex2:latest
+  image: ghcr.io/melcore1/tradnex-v2:latest
   env_file:
     # Edit to match your TrueNAS layout.
     - /mnt/tank/tradnex/.env
