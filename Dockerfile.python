@@ -1,0 +1,53 @@
+# syntax=docker/dockerfile:1.7
+ARG PYTHON_VERSION=3.12
+
+# === Stage 1: builder ===
+FROM python:${PYTHON_VERSION}-slim-bookworm AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    VIRTUAL_ENV=/opt/venv \
+    PATH="/opt/venv/bin:$PATH"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      gcc g++ gfortran \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /opt/venv && pip install --upgrade pip
+
+WORKDIR /build
+COPY pyproject.toml README.md ./
+RUN mkdir -p shared services && \
+    touch shared/__init__.py services/__init__.py && \
+    pip install .
+
+# === Stage 2: runtime ===
+FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    VIRTUAL_ENV=/opt/venv \
+    PATH="/opt/venv/bin:$PATH" \
+    PYTHONPATH=/app
+
+RUN groupadd --system --gid 1001 appgroup && \
+    useradd --system --uid 1001 --gid appgroup --create-home --shell /usr/sbin/nologin appuser
+
+COPY --from=builder --chown=appuser:appgroup /opt/venv /opt/venv
+
+WORKDIR /app
+
+COPY --chown=appuser:appgroup shared ./shared
+COPY --chown=appuser:appgroup services ./services
+COPY --chown=appuser:appgroup migrations ./migrations
+COPY --chown=appuser:appgroup prompts ./prompts
+
+RUN mkdir -p /data && chown appuser:appgroup /data
+
+USER appuser
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD python -c "import shared.schemas" || exit 1
+
+CMD ["python", "-m", "services.data.main"]

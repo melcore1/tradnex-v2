@@ -1,0 +1,54 @@
+# Production compose — pulls the image published by GitHub Actions on push to main.
+# For local development with bind-mounted source, layer the dev override on top:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+
+networks:
+  tradnex_net:
+    driver: bridge
+
+x-python-base: &python-base
+  image: ghcr.io/melcore1/tradnex2:${IMAGE_TAG:-latest}
+  env_file: .env
+  environment:
+    DATABASE_PATH: /data/tradnex.db
+  volumes:
+    - ./data:/data
+  networks:
+    - tradnex_net
+  restart: unless-stopped
+
+services:
+  data:
+    <<: *python-base
+    container_name: tradnex_data
+    command: python -m services.data.main
+
+  scanner:
+    <<: *python-base
+    container_name: tradnex_scanner
+    command: python -m services.scanner.main
+    depends_on:
+      - data
+
+  orchestrator:
+    <<: *python-base
+    container_name: tradnex_orchestrator
+    command: python -m services.orchestrator.main
+    depends_on:
+      - data
+
+  api:
+    <<: *python-base
+    container_name: tradnex_api
+    command: python -m services.api.main
+    ports:
+      - "8080:8080"
+    depends_on:
+      - data
+
+  tripwire:
+    <<: *python-base
+    container_name: tradnex_tripwire
+    command: python -m services.tripwire.main
+    depends_on:
+      - data

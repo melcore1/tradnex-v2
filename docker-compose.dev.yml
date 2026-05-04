@@ -1,0 +1,32 @@
+# Local development override.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#
+# Builds the image locally as `tradnex:dev` and bind-mounts source for fast iteration.
+# Runs as host uid:gid (default 1000:1000) so writes to ./data work without chown dance.
+# If your host uid is different, set TRADNEX_UID and TRADNEX_GID in .env.
+
+x-dev-overrides: &dev-overrides
+  build:
+    context: .
+    dockerfile: Dockerfile.python
+  image: tradnex:dev
+  user: "${TRADNEX_UID:-1000}:${TRADNEX_GID:-1000}"
+  volumes:
+    - ./shared:/app/shared:ro
+    - ./services:/app/services:ro
+    - ./migrations:/app/migrations:ro
+    - ./prompts:/app/prompts:ro
+    - ./tests:/app/tests:ro
+
+services:
+  data:
+    <<: *dev-overrides
+  scanner:
+    <<: *dev-overrides
+  orchestrator:
+    <<: *dev-overrides
+  api:
+    <<: *dev-overrides
+  tripwire:
+    <<: *dev-overrides

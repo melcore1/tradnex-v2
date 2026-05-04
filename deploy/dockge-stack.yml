@@ -1,0 +1,70 @@
+# TradNex 2 — TrueNAS Dockge stack
+# Pulled from ghcr.io/melcore1/tradnex2:latest.
+#
+# To deploy:
+#   1. Dockge → Stacks → New Stack → paste this file
+#   2. Edit the volume bind paths below to match your TrueNAS dataset
+#   3. Place a .env file at the path referenced under env_file (see .env.example in source repo)
+#   4. Click Deploy
+#
+# Image is public — no docker login needed.
+#
+# Container runs as uid 1001:1001; the bind-mounted /data dir on TrueNAS must be writable by that uid:
+#   mkdir -p /mnt/tank/tradnex/data
+#   chown -R 1001:1001 /mnt/tank/tradnex/data
+#
+# To pick up new image versions: Dockge → Stack → Pull → Up.
+
+networks:
+  tradnex_net:
+    driver: bridge
+
+x-python-base: &python-base
+  image: ghcr.io/melcore1/tradnex2:latest
+  env_file:
+    # Edit to match your TrueNAS layout.
+    - /mnt/tank/tradnex/.env
+  environment:
+    DATABASE_PATH: /data/tradnex.db
+  volumes:
+    # Edit to match your TrueNAS dataset path.
+    - /mnt/tank/tradnex/data:/data
+  networks:
+    - tradnex_net
+  restart: unless-stopped
+
+services:
+  data:
+    <<: *python-base
+    container_name: tradnex_data
+    command: python -m services.data.main
+
+  scanner:
+    <<: *python-base
+    container_name: tradnex_scanner
+    command: python -m services.scanner.main
+    depends_on:
+      - data
+
+  orchestrator:
+    <<: *python-base
+    container_name: tradnex_orchestrator
+    command: python -m services.orchestrator.main
+    depends_on:
+      - data
+
+  api:
+    <<: *python-base
+    container_name: tradnex_api
+    command: python -m services.api.main
+    ports:
+      - "8080:8080"
+    depends_on:
+      - data
+
+  tripwire:
+    <<: *python-base
+    container_name: tradnex_tripwire
+    command: python -m services.tripwire.main
+    depends_on:
+      - data

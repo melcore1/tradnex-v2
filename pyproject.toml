@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tradnex"
+version = "0.0.0"
+description = "TradNex 2 — autonomous paper options trading research system"
+requires-python = ">=3.12"
+dependencies = [
+  "pydantic>=2",
+  "pydantic-settings>=2",
+  "python-dotenv",
+  "httpx",
+  "pandas",
+  "numpy",
+  "arch",
+  "scipy",
+  "apscheduler>=3.10",
+  "fastapi",
+  "uvicorn",
+  "sse-starlette",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "ruff", "mypy"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["shared", "services"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "shared.*"
+strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
