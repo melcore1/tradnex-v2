@@ -20,10 +20,11 @@ dependencies = [
   "fastapi",
   "uvicorn",
   "sse-starlette",
+  "schwab-py>=1.5.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "ruff", "mypy"]
+dev = ["pytest", "pytest-asyncio", "ruff", "mypy", "respx", "ta"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["shared", "services"]
@@ -45,3 +46,4 @@ strict = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"

@@ -64,14 +64,76 @@ All five backend services run from the same image; they differ only by the `comm
 
 Both jobs target Python 3.12 (production target). Local dev was verified on 3.14 too.
 
+## Data CLI
+
+Once the venv is set up, the data service has a CLI for sanity checks against
+whichever client `DATA_CLIENT` selects (mock or schwab):
+
+    DATABASE_PATH=./data/tradnex.db DATA_CLIENT=mock \
+        .venv/bin/python -m services.data.cli quote NVDA
+
+Subcommands: `quote <T>`, `quotes <T1> <T2>...`, `bars <T> --timeframe 1d --limit 50`,
+`chain <T> --min-dte 3 --max-dte 14 --type call`, `account`, `movers`, `status`.
+Append `--json` to any command for raw JSON output.
+
+## Activating Schwab data (when API approval lands)
+
+Phase 1a ships the Schwab client fully built; flipping it on once approved is a
+config change, not a code change.
+
+1. Add credentials to `.env`:
+
+       SCHWAB_CLIENT_ID=<from developer portal>
+       SCHWAB_CLIENT_SECRET=<from developer portal>
+       SCHWAB_REDIRECT_URI=https://127.0.0.1:8443
+
+2. Run one-time auth (opens browser, log in to your **brokerage** account):
+
+       .venv/bin/python scripts/schwab_auth.py
+
+3. Flip `DATA_CLIENT=schwab` in `.env`.
+
+4. Restart the data service:
+
+       docker compose restart data
+
+5. Verify:
+
+       .venv/bin/python -m services.data.cli quote NVDA
+
+   Should return a real-time NVDA quote.
+
+## Analytics
+
+Tier 2 analytics live under `shared/analytics/` and consume the `Bar` schema from
+the data layer. Each indicator returns a Pydantic result struct with `latest`,
+`series`, and `@computed_field` derived signals; pure functions, Decimal in/out,
+no global state. Module layout:
+
+- `momentum.py` — RSI, MACD (with bullish-divergence detection)
+- `trend.py` — EMA, SMA, ADX, crossover detection, `above_200_sma`
+- `volatility.py` — ATR, Bollinger Bands, GARCH(1,1), Monte Carlo paths
+- `levels.py` — Fibonacci retracements/extensions, support/resistance
+- `volume.py` — VWAP, volume-vs-average
+- `full_analysis.py` — `compute_full_analysis()` aggregator (async; GARCH on a
+  worker thread)
+
+Sanity-check from the CLI:
+
+    DATABASE_PATH=./data/tradnex.db DATA_CLIENT=mock \
+        .venv/bin/python -m services.data.cli analyze NVDA --timeframe 1d --bars 300
+
+Add `--json` for raw output suitable for piping to `jq`.
+
 ## Phase status
 
 - **Phase 0 — foundation + CI**: complete
-- Phase 1 — Schwab data layer: not started
-- Phase 2 — analytics: not started
-- Phase 3 — scanner + strategy rules: not started
-- Phase 4 — hard vetoes: not started
-- Phase 5 — Claude evaluator: not started
-- Phase 6 — FastAPI: not started
-- Phase 7 — Next.js dashboard: not started
-- Phase 8 — paper execution: not started
+- **Phase 1a — data interfaces, mock, Schwab client**: complete (Schwab dormant until API approval)
+- **Phase 1b — Tier 2 analytics**: complete
+- Phase 1c — Tier 3 options analytics (GEX, IVRank, etc.): not started
+- Phase 2 — scanner + strategy rules: not started
+- Phase 3 — hard vetoes: not started
+- Phase 4 — Claude evaluator: not started
+- Phase 5 — FastAPI: not started
+- Phase 6 — Next.js dashboard: not started
+- Phase 7 — paper execution: not started

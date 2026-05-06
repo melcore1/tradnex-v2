@@ -1,0 +1,377 @@
+"""Schwab Trader API implementation of MarketDataClient.
+
+Wraps schwab-py's AsyncClient. The module imports without requiring credentials;
+construction validates credentials and loads a persisted OAuth token. Tests
+inject a pre-built AsyncClient via the `_client` kwarg to bypass real auth.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import UTC, datetime, time, timedelta
+from decimal import Decimal
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import httpx
+
+from shared.clients.market_data import (
+    ContractTypeFilter,
+    MarketDataClient,
+    Timeframe,
+)
+from shared.schemas.market import (
+    AccountState,
+    Bar,
+    ContractType,
+    MarketStatus,
+    MoverEntry,
+    Movers,
+    OptionContract,
+    OptionsChain,
+    Quote,
+)
+
+if TYPE_CHECKING:
+    from schwab.client import AsyncClient
+
+
+class SchwabAuthRequired(Exception):
+    """Token missing or refresh failed beyond automatic recovery."""
+
+
+class SchwabRateLimited(Exception):
+    """Schwab returned 429 Too Many Requests."""
+
+
+class SchwabApiError(Exception):
+    """Schwab returned 5xx or another unexpected error."""
+
+
+_TIMEFRAME_TO_SCHWAB = {
+    "1m": ("minute", 1),
+    "5m": ("minute", 5),
+    "15m": ("minute", 15),
+    "1h": ("minute", 30),  # Schwab has no 1h native; 30m and aggregate later if needed
+    "1d": ("daily", 1),
+}
+
+
+def _is_us_market_hours_now() -> bool:
+    """Cheap heuristic: M-F 13:30-20:00 UTC. Doesn't handle holidays or DST shifts."""
+    now = datetime.now(UTC)
+    if now.weekday() >= 5:
+        return False
+    return time(13, 30) <= now.time() <= time(20, 0)
+
+
+def _decimal(value: float | int | str | None, default: str = "0") -> Decimal:
+    if value is None:
+        return Decimal(default)
+    return Decimal(str(value))
+
+
+class SchwabDataClient(MarketDataClient):
+    def __init__(
+        self,
+        client_id: str | None = None,
+        client_secret: str | None = None,
+        redirect_uri: str | None = None,
+        token_path: str | None = None,
+        *,
+        _client: AsyncClient | None = None,
+    ) -> None:
+        if _client is not None:
+            self._client = _client
+            return
+
+        if not all([client_id, client_secret, redirect_uri, token_path]):
+            raise SchwabAuthRequired(
+                "Schwab credentials required: client_id, client_secret, redirect_uri, token_path"
+            )
+
+        assert token_path is not None  # narrowed
+        if not Path(token_path).exists():
+            raise SchwabAuthRequired(
+                f"Schwab token not found at {token_path}. "
+                f"Run scripts/schwab_auth.py to perform initial OAuth flow."
+            )
+
+        try:
+            from schwab.auth import client_from_token_file
+        except ImportError as e:  # pragma: no cover
+            raise SchwabAuthRequired(f"schwab-py not installed: {e}") from e
+
+        try:
+            self._client = client_from_token_file(
+                token_path=token_path,
+                api_key=client_id,
+                app_secret=client_secret,
+                asyncio=True,
+            )
+        except Exception as e:
+            raise SchwabAuthRequired(f"Failed to load Schwab token: {e}") from e
+
+    def _raise_for_status(self, response: httpx.Response) -> None:
+        code = response.status_code
+        if 200 <= code < 300:
+            return
+        if code == 401:
+            raise SchwabAuthRequired(f"401 Unauthorized: {response.text[:200]}")
+        if code == 429:
+            raise SchwabRateLimited(f"429 Rate limited: {response.text[:200]}")
+        raise SchwabApiError(f"{code}: {response.text[:200]}")
+
+    def _map_quote(self, ticker: str, data: dict[str, Any]) -> Quote:
+        ticker_data = data.get(ticker) or data.get(ticker.upper()) or {}
+        quote = ticker_data.get("quote", {})
+        fundamental = ticker_data.get("fundamental", {})
+        last = quote.get("lastPrice", quote.get("mark", 0))
+        return Quote(
+            ticker=ticker.upper(),
+            spot=_decimal(last),
+            bid=_decimal(quote.get("bidPrice", last)),
+            ask=_decimal(quote.get("askPrice", last)),
+            bid_size=int(quote.get("bidSize", 0) or 0),
+            ask_size=int(quote.get("askSize", 0) or 0),
+            day_open=_decimal(quote.get("openPrice", last)),
+            day_high=_decimal(quote.get("highPrice", last)),
+            day_low=_decimal(quote.get("lowPrice", last)),
+            prev_close=_decimal(quote.get("closePrice", last)),
+            volume=int(quote.get("totalVolume", 0) or 0),
+            avg_volume_30d=int(fundamental.get("avg30DaysVolume", 0) or 0),
+            is_market_open=_is_us_market_hours_now(),
+            timestamp=datetime.now(UTC),
+        )
+
+    async def get_quote(self, ticker: str) -> Quote:
+        response = await self._client.get_quote(ticker)
+        self._raise_for_status(response)
+        return self._map_quote(ticker, response.json())
+
+    async def get_quotes(self, tickers: list[str]) -> dict[str, Quote]:
+        response = await self._client.get_quotes(tickers)
+        self._raise_for_status(response)
+        data = response.json()
+        return {t.upper(): self._map_quote(t, data) for t in tickers}
+
+    async def get_bars(
+        self,
+        ticker: str,
+        timeframe: Timeframe,
+        limit: int = 200,
+        end: datetime | None = None,
+    ) -> list[Bar]:
+        freq_type, freq = _TIMEFRAME_TO_SCHWAB[timeframe]
+        end_ts = end or datetime.now(UTC)
+        response = await self._client.get_price_history(
+            ticker,
+            frequency_type=freq_type,
+            frequency=freq,
+            end_datetime=end_ts,
+        )
+        self._raise_for_status(response)
+        data = response.json()
+        candles = data.get("candles", [])[-limit:]
+        bars: list[Bar] = []
+        for c in candles:
+            ts = datetime.fromtimestamp(c["datetime"] / 1000, tz=UTC)
+            vwap = c.get("vwap")
+            bars.append(
+                Bar(
+                    timestamp=ts,
+                    open=_decimal(c["open"]),
+                    high=_decimal(c["high"]),
+                    low=_decimal(c["low"]),
+                    close=_decimal(c["close"]),
+                    volume=int(c.get("volume", 0) or 0),
+                    vwap=_decimal(vwap) if vwap is not None and timeframe != "1d" else None,
+                )
+            )
+        return bars
+
+    def _map_option_contract(
+        self,
+        contract_data: dict[str, Any],
+        underlying: str,
+        underlying_spot: Decimal,
+        contract_type: ContractType,
+    ) -> OptionContract:
+        # Schwab returns IV as a percentage (e.g. 32.0 means 32%); convert to decimal.
+        raw_iv = contract_data.get("volatility") or 0.0
+        iv_decimal = Decimal(str(raw_iv)) / Decimal("100")
+        exp_ms = contract_data.get("expirationDate", 0)
+        exp_date = datetime.fromtimestamp(exp_ms / 1000, tz=UTC).date()
+        return OptionContract(
+            symbol=contract_data["symbol"].strip(),
+            underlying=underlying,
+            underlying_spot=underlying_spot,
+            expiration=exp_date,
+            dte=int(contract_data.get("daysToExpiration", 0)),
+            strike=_decimal(contract_data["strikePrice"]),
+            contract_type=contract_type,
+            bid=_decimal(contract_data.get("bid", 0)),
+            ask=_decimal(contract_data.get("ask", 0)),
+            last=_decimal(contract_data["last"]) if contract_data.get("last") is not None else None,
+            volume=int(contract_data.get("totalVolume", 0) or 0),
+            open_interest=int(contract_data.get("openInterest", 0) or 0),
+            iv=iv_decimal,
+            delta=_decimal(contract_data.get("delta", 0)),
+            gamma=_decimal(contract_data.get("gamma", 0)),
+            theta=_decimal(contract_data.get("theta", 0)),
+            vega=_decimal(contract_data.get("vega", 0)),
+            rho=_decimal(contract_data.get("rho", 0)),
+        )
+
+    async def get_options_chain(
+        self,
+        ticker: str,
+        min_dte: int | None = None,
+        max_dte: int | None = None,
+        contract_type: ContractTypeFilter = "both",
+    ) -> OptionsChain:
+        kwargs: dict[str, Any] = {}
+        if min_dte is not None:
+            kwargs["from_date"] = (datetime.now(UTC).date() + timedelta(days=min_dte))
+        if max_dte is not None:
+            kwargs["to_date"] = (datetime.now(UTC).date() + timedelta(days=max_dte))
+        response = await self._client.get_option_chain(ticker, **kwargs)
+        self._raise_for_status(response)
+        data = response.json()
+
+        underlying = ticker.upper()
+        spot = _decimal(data.get("underlying", {}).get("last", 0))
+
+        contracts: list[OptionContract] = []
+        if contract_type in ("call", "both"):
+            for _, strikes in (data.get("callExpDateMap") or {}).items():
+                for _, contract_list in strikes.items():
+                    for c in contract_list:
+                        contracts.append(
+                            self._map_option_contract(c, underlying, spot, "call")
+                        )
+        if contract_type in ("put", "both"):
+            for _, strikes in (data.get("putExpDateMap") or {}).items():
+                for _, contract_list in strikes.items():
+                    for c in contract_list:
+                        contracts.append(
+                            self._map_option_contract(c, underlying, spot, "put")
+                        )
+
+        if min_dte is not None:
+            contracts = [c for c in contracts if c.dte >= min_dte]
+        if max_dte is not None:
+            contracts = [c for c in contracts if c.dte <= max_dte]
+
+        return OptionsChain(
+            underlying=underlying,
+            spot_at_fetch=spot,
+            contracts=contracts,
+            timestamp=datetime.now(UTC),
+        )
+
+    async def get_account_state(self) -> AccountState:
+        accounts_response = await self._client.get_account_numbers()
+        self._raise_for_status(accounts_response)
+        accounts = accounts_response.json()
+        if not accounts:
+            raise SchwabApiError("No Schwab accounts returned")
+        first = accounts[0]
+        account_hash = first["hashValue"]
+        account_id = first["accountNumber"]
+
+        detail_response = await self._client.get_account(account_hash)
+        self._raise_for_status(detail_response)
+        detail = detail_response.json()
+        sec = detail.get("securitiesAccount", detail)
+        balances = sec.get("currentBalances", {})
+        is_margin = sec.get("type", "").upper() == "MARGIN"
+        day_trades_remaining = int(sec.get("roundTrips", 0))
+        return AccountState(
+            account_id=account_id,
+            buying_power=_decimal(balances.get("buyingPower", 0)),
+            cash=_decimal(balances.get("cashBalance", balances.get("cashAvailableForTrading", 0))),
+            equity=_decimal(balances.get("equity", balances.get("liquidationValue", 0))),
+            pdt_count_remaining=max(3 - day_trades_remaining, 0),
+            is_pdt=bool(sec.get("isDayTrader", False)),
+            margin_buying_power=_decimal(balances.get("buyingPower")) if is_margin else None,
+            positions_count=len(sec.get("positions", []) or []),
+            timestamp=datetime.now(UTC),
+        )
+
+    async def get_movers(self) -> Movers:
+        async def _movers_for(sort_order: str) -> list[dict[str, Any]]:
+            response = await self._client.get_movers(
+                "$SPX",
+                sort_order=sort_order,
+                frequency=10,
+            )
+            self._raise_for_status(response)
+            screeners: list[dict[str, Any]] = response.json().get("screeners", [])
+            return screeners
+
+        active_raw, gainers_raw, losers_raw = await asyncio.gather(
+            _movers_for("VOLUME"),
+            _movers_for("PERCENT_CHANGE_UP"),
+            _movers_for("PERCENT_CHANGE_DOWN"),
+        )
+
+        def _to_entries(rows: list[dict[str, Any]], category: str) -> list[MoverEntry]:
+            return [
+                MoverEntry(
+                    ticker=r.get("symbol", "").upper(),
+                    last=_decimal(r.get("lastPrice", 0)),
+                    change_pct=_decimal(r.get("netPercentChange", 0)),
+                    volume=int(r.get("totalVolume", 0) or 0),
+                    category=category,  # type: ignore[arg-type]
+                )
+                for r in rows[:10]
+            ]
+
+        return Movers(
+            most_active=_to_entries(active_raw, "most_active"),
+            top_gainers=_to_entries(gainers_raw, "top_gainer"),
+            top_losers=_to_entries(losers_raw, "top_loser"),
+            timestamp=datetime.now(UTC),
+        )
+
+    async def get_market_status(self) -> MarketStatus:
+        response = await self._client.get_market_hours(["equity"])
+        self._raise_for_status(response)
+        data = response.json()
+        equity = data.get("equity", {})
+        # equity may be keyed by product (e.g. "EQ"); take the first entry.
+        first: dict[str, Any] = next(iter(equity.values()), {}) if equity else {}
+        is_open = bool(first.get("isOpen", _is_us_market_hours_now()))
+        sessions = first.get("sessionHours", {}) or {}
+        regular = (sessions.get("regularMarket") or [{}])[0]
+        next_open = self._parse_session_time(regular.get("start"))
+        next_close = self._parse_session_time(regular.get("end"))
+        now = datetime.now(UTC)
+        return MarketStatus(
+            is_open=is_open,
+            is_pre_market=bool(sessions.get("preMarket")) and not is_open,
+            is_post_market=bool(sessions.get("postMarket")) and not is_open,
+            next_open=next_open or (now + timedelta(hours=1)),
+            next_close=next_close or (now + timedelta(hours=8)),
+            timestamp=now,
+        )
+
+    @staticmethod
+    def _parse_session_time(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            return parsed.astimezone(UTC)
+        except ValueError:
+            return None
+
+    async def health_check(self) -> bool:
+        try:
+            await self.get_market_status()
+            return True
+        except Exception:
+            return False
