@@ -497,6 +497,70 @@ messages. Pass `?since_id=<int>` or set `Last-Event-ID` to replay on
 reconnect. Phase 8/9 can swap the polling tail for an in-process
 pub/sub bus if event volume grows.
 
+## Frontend (Phase 7)
+
+Next.js 15 (App Router) + TypeScript + shadcn/ui + Tailwind. Mobile-first,
+dark mode, served by a Caddy reverse proxy alongside the API. SSE-driven
+live updates: every event invalidates the relevant TanStack Query keys.
+
+```
+   ┌─────────────┐         ┌──────────┐
+   │  Caddy :80  │  ──/api──> tradnex_api (uvicorn :8080)
+   │             │  ──else──> tradnex_frontend (next :3000)
+   └─────────────┘
+```
+
+### Dev flows
+
+Two flows, both supported. Use whichever feels right.
+
+```bash
+# A — full stack containerized (frontend with HMR via bind-mount)
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+# → http://localhost
+
+# B — frontend on host, backend in docker (faster inner-loop iteration)
+docker compose -f docker-compose.yml \
+               -f docker-compose.dev.yml \
+               -f docker-compose.dev-host.yml \
+               up -d data scanner orchestrator monitor evaluator api
+cd frontend
+NEXT_PUBLIC_API_BASE=http://localhost:8080 npm run dev
+# → http://localhost:3000
+```
+
+### Production
+
+```bash
+# Pulls ghcr.io/melcore1/tradnex-v2 (backend) and
+#       ghcr.io/melcore1/tradnex-v2-frontend (frontend)
+docker compose up -d
+# → http://<host>/  (Caddy fronts both)
+```
+
+### Routes
+
+`/` dashboard · `/login` · `/approvals` · `/trades` · `/watchlist` ·
+`/journal` · `/settings/{system,strategy,prompts,universe}`. Auth-gated
+by Next.js `middleware.ts`; `/login` is the only public route. The
+"Copy Full Context" button on each candidate hits
+`/api/candidates/{id}/full-context` — paste-ready markdown for
+Claude.ai.
+
+### Backend additions in Phase 7
+
+Two additive endpoints to support UI features:
+
+- `GET /api/candidates/{id}/full-context` — returns just `{copyable_text}`
+- `GET /api/system/status` — extended with `trading_mode`
+  (`"paper"` until Phase 8) and `override_reasons` (e.g.
+  *"Monitor forced active — 2 open positions"*).
+
+No schema migrations.
+
+See [`frontend/README.md`](frontend/README.md) for layout, scripts,
+testing philosophy, and the SSE→TanStack Query bridge.
+
 ## Phase status
 
 - **Phase 0 — foundation + CI**: complete
@@ -510,5 +574,5 @@ pub/sub bus if event volume grows.
 - **Phase 4 — orchestrator + hard vetoes + calendar service**: complete
 - **Phase 5 — Claude evaluator (with Exa news + prompt versioning)**: complete
 - **Phase 6 — FastAPI service (auth + REST + SSE)**: complete
-- Phase 7 — Next.js dashboard: not started
+- **Phase 7 — Next.js dashboard + Caddy reverse proxy**: complete
 - Phase 8 — paper execution: not started

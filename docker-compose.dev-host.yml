@@ -1,0 +1,22 @@
+# Override for the "host-side npm run dev" flow.
+# Re-exposes the API port so the frontend running on the host (outside
+# docker) can call http://localhost:8080.
+#
+# Usage:
+#   # Terminal 1 — backend stack only
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+#                  -f docker-compose.dev-host.yml \
+#                  up -d data scanner orchestrator monitor evaluator api
+#
+#   # Terminal 2 — frontend on host
+#   cd frontend
+#   NEXT_PUBLIC_API_BASE=http://localhost:8080 npm run dev
+#   # → http://localhost:3000
+#
+# Caddy is intentionally NOT brought up here; the host-served frontend
+# talks to the API directly.
+
+services:
+  api:
+    ports:
+      - "8080:8080"

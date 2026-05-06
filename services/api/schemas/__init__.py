@@ -58,6 +58,13 @@ class CandidateDetail(BaseModel):
     copyable_text: str  # everything as a single block, ready to paste
 
 
+class FullContextResponse(BaseModel):
+    """Lightweight version of CandidateDetail for the 'Copy Full Context'
+    flow. Returns just the markdown without the structured payload."""
+
+    copyable_text: str
+
+
 class ApproveRequest(BaseModel):
     notes: str | None = None
     quantity_override: int | None = Field(default=None, ge=1)
@@ -141,6 +148,14 @@ class SystemStatusResponse(BaseModel):
     queue_in_flight: int
     open_positions: int
     pending_human_approvals: int
+    # Phase 7: UI-visible context.
+    # `trading_mode` is hard-coded "paper" until Phase 8 introduces live
+    # trading. The field is exposed now so Phase 8 only flips a value, not
+    # a schema. `override_reasons` carries human-readable explanations of
+    # why a toggle is forced (e.g. "Monitor forced active — 1 open
+    # position").
+    trading_mode: Literal["paper", "live"] = "paper"
+    override_reasons: dict[str, str | None] = Field(default_factory=dict)
 
 
 class ToggleRequest(BaseModel):

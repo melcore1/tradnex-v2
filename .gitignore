@@ -12,6 +12,9 @@ data/*.db-wal
 
 node_modules/
 .next/
+out/
 dist/
 build/
 *.egg-info/
+*.tsbuildinfo
+.eslintcache

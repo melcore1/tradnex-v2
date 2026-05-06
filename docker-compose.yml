@@ -47,8 +47,9 @@ services:
       - 0.0.0.0
       - --port
       - "8080"
-    ports:
-      - "8080:8080"
+    # No public port — Caddy fronts all external traffic. Use the
+    # docker-compose.dev-host.yml override to re-expose 8080 for
+    # host-side `npm run dev`.
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/api/health',timeout=3).status==200 else 1)\""]
       interval: 30s
@@ -71,3 +72,44 @@ services:
     command: python -m services.evaluator.main
     depends_on:
       - data
+
+  frontend:
+    image: ghcr.io/melcore1/tradnex-v2-frontend:${IMAGE_TAG:-latest}
+    container_name: tradnex_frontend
+    environment:
+      # Empty — same-origin via Caddy in production.
+      NEXT_PUBLIC_API_BASE: ""
+      # Used by Next.js middleware.ts for SSR auth check inside the network.
+      API_INTERNAL_URL: http://api:8080
+      NODE_ENV: production
+    networks:
+      - tradnex_net
+    restart: unless-stopped
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:3000/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: tradnex_caddy
+    ports:
+      - "${CADDY_HTTP_PORT:-80}:80"
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - tradnex_net
+    depends_on:
+      - api
+      - frontend
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

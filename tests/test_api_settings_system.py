@@ -92,3 +92,80 @@ async def test_unknown_toggle_rejected(client_setup) -> None:
     )
     # Pydantic literal validation → 422
     assert r.status_code == 422
+
+
+# ---- Phase 7: trading_mode + override_reasons ----
+
+
+async def test_status_includes_trading_mode_paper(client_setup) -> None:
+    """Phase 7 hard-codes trading_mode='paper' until Phase 8."""
+    _, client = client_setup
+    body = client.get("/api/system/status").json()
+    assert body["trading_mode"] == "paper"
+
+
+async def test_status_override_reasons_all_null_when_no_override(
+    client_setup,
+) -> None:
+    _, client = client_setup
+    body = client.get("/api/system/status").json()
+    assert body["override_reasons"] == {
+        "scanner": None,
+        "monitor": None,
+        "llm": None,
+    }
+
+
+async def test_monitor_paused_with_open_positions_emits_override(
+    client_setup,
+) -> None:
+    """monitor_paused=True + at least one open position → override_reasons.monitor
+    contains the human-readable explanation."""
+    import time as _t
+
+    conn, client = client_setup
+    # Pause monitor
+    client.post(
+        "/api/system/toggle",
+        json={"name": "monitor_paused", "enabled": False},  # enabled=false → paused
+    )
+    # Insert two open positions to verify the count + plural rendering
+    for sym in ("NVDA250620C150", "MSFT250620C400"):
+        conn.execute(
+            "INSERT INTO positions (ticker, contract_symbol, side, quantity, "
+            "entry_price, entry_ts, status) VALUES "
+            "(?, ?, 'long', 1, 5.0, ?, 'open')",
+            (sym.split("2")[0], sym, _t.time() - 3600),
+        )
+    conn.commit()
+    body = client.get("/api/system/status").json()
+    assert body["monitor_paused"] is True
+    assert body["open_positions"] == 2
+    assert body["override_reasons"]["monitor"] == (
+        "Monitor forced active — 2 open positions"
+    )
+    assert body["override_reasons"]["scanner"] is None
+    assert body["override_reasons"]["llm"] is None
+
+
+async def test_monitor_paused_singular_position_uses_singular_word(
+    client_setup,
+) -> None:
+    import time as _t
+
+    conn, client = client_setup
+    client.post(
+        "/api/system/toggle",
+        json={"name": "monitor_paused", "enabled": False},
+    )
+    conn.execute(
+        "INSERT INTO positions (ticker, contract_symbol, side, quantity, "
+        "entry_price, entry_ts, status) VALUES "
+        "('NVDA', 'NVDA250620C150', 'long', 1, 5.0, ?, 'open')",
+        (_t.time() - 3600,),
+    )
+    conn.commit()
+    body = client.get("/api/system/status").json()
+    assert body["override_reasons"]["monitor"] == (
+        "Monitor forced active — 1 open position"
+    )

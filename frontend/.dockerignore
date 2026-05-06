@@ -1,0 +1,13 @@
+node_modules
+.next
+out
+dist
+.env*.local
+.git
+.gitignore
+README.md
+*.log
+__tests__
+**/*.test.ts
+**/*.test.tsx
+.eslintcache

@@ -6,7 +6,7 @@ on:
 
 jobs:
   test:
-    name: Lint, type-check, smoke test
+    name: Lint, type-check, smoke test (backend)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,3 +33,82 @@ jobs:
         env:
           DATABASE_PATH: /tmp/tradnex_ci.db
         run: pytest tests/ -v
+
+  frontend:
+    name: Lint, typecheck, test, build (frontend)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run test
+
+      - name: Build
+        run: npm run build
+
+  api-types-in-sync:
+    name: API types in sync
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[dev]"
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Run API in background
+        env:
+          DATABASE_PATH: /tmp/tradnex_apitypes.db
+        run: |
+          uvicorn services.api.main:app --host 127.0.0.1 --port 8080 > api.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8080/api/health > /dev/null; then
+              echo "API up"; break
+            fi
+            sleep 1
+          done
+
+      - name: Regenerate API types and verify no diff
+        working-directory: frontend
+        run: |
+          npx openapi-typescript http://127.0.0.1:8080/api/openapi.json -o src/types/api.generated.ts
+          git diff --exit-code src/types/api.generated.ts

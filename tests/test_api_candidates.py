@@ -128,5 +128,28 @@ async def test_reject_transitions_status(client_setup) -> None:
     assert row["status"] == "rejected_by_user"
 
 
+# ---- Phase 7: /full-context ----
+
+
+async def test_full_context_returns_copyable_text(client_setup) -> None:
+    """/full-context returns just the copyable_text payload."""
+    conn, client = client_setup
+    cid = await _seed_pending_human(conn)
+    r = client.get(f"/api/candidates/{cid}/full-context")
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body.keys()) == {"copyable_text"}
+    assert body["copyable_text"].startswith("# Candidate")
+    # Same text the detail endpoint would return.
+    detail = client.get(f"/api/candidates/{cid}").json()
+    assert body["copyable_text"] == detail["copyable_text"]
+
+
+async def test_full_context_404_on_missing(client_setup) -> None:
+    _, client = client_setup
+    r = client.get("/api/candidates/99999/full-context")
+    assert r.status_code == 404
+
+
 # Suppress unused-import noise (time is for future tests if needed)
 _ = time

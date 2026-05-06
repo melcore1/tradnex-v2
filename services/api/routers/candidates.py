@@ -15,6 +15,7 @@ from services.api.schemas import (
     CandidateActionResponse,
     CandidateDetail,
     CandidateSummary,
+    FullContextResponse,
     RejectRequest,
 )
 from services.evaluator.persistence import fetch_recent_evaluations
@@ -99,15 +100,13 @@ def _load_candidate_row(db: Any, candidate_id: int) -> dict[str, Any]:
     return dict(row)
 
 
-@router.get("/{candidate_id}", response_model=CandidateDetail)
-async def get_candidate(
-    candidate_id: int,
-    db: DB,
-    user: CurrentUser,
-) -> CandidateDetail:
-    """Full candidate detail with rule trace, veto trace, llm evaluation,
-    selected contract, and lifecycle events. Returns a single
-    `copyable_text` block ready to paste into Claude.ai."""
+async def _build_candidate_detail(db: Any, candidate_id: int) -> CandidateDetail:
+    """Hydrate a CandidateDetail from the candidates row and its
+    associated rule_trace, veto_trace, llm_evaluation, selected_contract,
+    and lifecycle_events. Builds the `copyable_text` markdown block.
+
+    Used by both `GET /{candidate_id}` (full detail) and
+    `GET /{candidate_id}/full-context` (text-only)."""
     row = _load_candidate_row(db, candidate_id)
     rule_trace = json.loads(row["rule_trace_json"]) if row.get("rule_trace_json") else None
     veto_trace_dict = fetch_latest_veto_trace(db, candidate_id)
@@ -161,6 +160,35 @@ async def get_candidate(
         lifecycle_events=lifecycle,
         copyable_text=copyable,
     )
+
+
+@router.get("/{candidate_id}", response_model=CandidateDetail)
+async def get_candidate(
+    candidate_id: int,
+    db: DB,
+    user: CurrentUser,
+) -> CandidateDetail:
+    """Full candidate detail with rule trace, veto trace, llm evaluation,
+    selected contract, and lifecycle events. Returns a single
+    `copyable_text` block ready to paste into Claude.ai."""
+    return await _build_candidate_detail(db, candidate_id)
+
+
+@router.get(
+    "/{candidate_id}/full-context",
+    response_model=FullContextResponse,
+)
+async def get_candidate_full_context(
+    candidate_id: int,
+    db: DB,
+    user: CurrentUser,
+) -> FullContextResponse:
+    """Lightweight version of `GET /{candidate_id}` for the 'Copy Full
+    Context' flow. Returns just the markdown block ready to paste into
+    Claude.ai, without the structured payload. Useful when the caller
+    has already fetched the structured detail and just wants the text."""
+    detail = await _build_candidate_detail(db, candidate_id)
+    return FullContextResponse(copyable_text=detail.copyable_text)
 
 
 def _approvable_status() -> set[str]:

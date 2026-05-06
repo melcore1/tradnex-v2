@@ -1,0 +1,56 @@
+# syntax=docker/dockerfile:1
+# Multi-stage build for the Next.js frontend.
+#
+# Targets:
+#   dev      — install deps + bind-mount source + `npm run dev`
+#   builder  — production build to .next/standalone
+#   runtime  — minimal node image serving server.js
+#
+# Mirrors the conventions of the backend's Dockerfile.python:
+# multi-stage, non-root user, healthcheck, linux/amd64.
+
+ARG NODE_VERSION=20
+
+FROM node:${NODE_VERSION}-alpine AS base
+WORKDIR /app
+RUN apk add --no-cache libc6-compat
+
+# ---- deps ----
+FROM base AS deps
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+
+# ---- dev (used by docker-compose.dev.yml) ----
+FROM deps AS dev
+ENV NEXT_TELEMETRY_DISABLED=1 \
+    NODE_ENV=development \
+    HOSTNAME=0.0.0.0 \
+    PORT=3000
+COPY . .
+EXPOSE 3000
+CMD ["npm", "run", "dev"]
+
+# ---- builder (production build) ----
+FROM deps AS builder
+ENV NEXT_TELEMETRY_DISABLED=1
+COPY . .
+RUN npm run build
+
+# ---- runtime (production image) ----
+FROM node:${NODE_VERSION}-alpine AS runtime
+WORKDIR /app
+RUN apk add --no-cache libc6-compat wget \
+    && addgroup -S nextjs -g 1001 \
+    && adduser -S nextjs -u 1001 -G nextjs
+COPY --from=builder --chown=nextjs:nextjs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nextjs /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nextjs /app/public ./public
+USER nextjs
+ENV NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    PORT=3000 \
+    HOSTNAME=0.0.0.0
+EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD wget --quiet --tries=1 --spider http://localhost:3000/ || exit 1
+CMD ["node", "server.js"]
