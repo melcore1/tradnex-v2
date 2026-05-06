@@ -177,4 +177,7 @@ async def test_market_status_returns_consistent_values() -> None:
     client.set_market_status(True)
     status = await client.get_market_status()
     assert status.is_open is True
-    assert status.next_open <= status.next_close or status.next_close >= status.next_open
+    # When market is open: next_close happens today, next_open is tomorrow,
+    # so next_close < next_open. Both populated.
+    assert status.next_close is not None and status.next_open is not None
+    assert status.next_close < status.next_open

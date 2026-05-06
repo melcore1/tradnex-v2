@@ -40,9 +40,21 @@ services:
   api:
     <<: *python-base
     container_name: tradnex_api
-    command: python -m services.api.main
+    command:
+      - uvicorn
+      - services.api.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
     ports:
       - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/api/health',timeout=3).status==200 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     depends_on:
       - data
 
@@ -50,5 +62,12 @@ services:
     <<: *python-base
     container_name: tradnex_monitor
     command: python -m services.monitor.main
+    depends_on:
+      - data
+
+  evaluator:
+    <<: *python-base
+    container_name: tradnex_evaluator
+    command: python -m services.evaluator.main
     depends_on:
       - data

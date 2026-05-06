@@ -105,9 +105,9 @@ def _row_to_entry(row: sqlite3.Row) -> EntryCandidate:
         options_analysis=options_analysis,
         regime=regime,
         overrides_applied=overrides,
-        confidence=confidence,  # type: ignore[arg-type]
-        sizing_multiplier=sizing_mult,  # type: ignore[arg-type]
-        max_premium=max_premium,  # type: ignore[arg-type]
+        confidence=confidence,
+        sizing_multiplier=sizing_mult,
+        max_premium=max_premium,
         shortlist=shortlist,
         selected_contract=selected,
         timestamp=datetime.fromtimestamp(float(row["created_ts"]), tz=UTC),
@@ -122,7 +122,7 @@ def _row_to_exit(row: sqlite3.Row) -> ExitCandidate:
     return ExitCandidate(
         position_id=int(row["position_id"]),
         ticker=row["ticker"],
-        exit_signal_type="soft_setup_invalidated",  # type: ignore[arg-type]
+        exit_signal_type="soft_setup_invalidated",
         is_auto_close=bool(overrides.get("is_auto_close", False)),
         needs_claude=bool(overrides.get("needs_claude", False)),
         auto_close_reason=overrides.get("auto_close_reason"),

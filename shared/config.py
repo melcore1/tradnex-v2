@@ -32,5 +32,18 @@ class Settings(BaseSettings):
     CLAUDE_TIMEOUT_SECONDS: int = 90
     CLAUDE_CLI_PATH: str = "claude"
 
+    # Phase 6 — FastAPI
+    API_HOST: str = "0.0.0.0"
+    API_PORT: int = 8080
+    SESSION_DURATION_DAYS: int = 30
+    SESSION_COOKIE_NAME: str = "tradnex_session"
+    SESSION_COOKIE_SECURE: bool = True
+    SESSION_COOKIE_SAMESITE: Literal["strict", "lax", "none"] = "strict"
+    LOGIN_LOCKOUT_THRESHOLD: int = 5
+    LOGIN_LOCKOUT_WINDOW_SECONDS: int = 900  # 15 min
+    LOGIN_LOCKOUT_DURATION_SECONDS: int = 3600  # 1 hour
+    CORS_ALLOW_ORIGINS: str = ""  # comma-separated; empty = same-origin only
+    SSE_POLL_INTERVAL_SECONDS: float = 1.0
+
 
 settings = Settings()  # type: ignore[call-arg]

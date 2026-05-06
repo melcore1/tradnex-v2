@@ -80,10 +80,14 @@ async def evaluate_candidate(
 ) -> EvaluationResult:
     """Run a full evaluation pass. Caller must have already claimed the
     candidate (status = 'processing_llm_evaluation')."""
+    from shared.services.runtime_toggles import get_toggle
+
     candidate = await load_full_candidate(conn, candidate_id)
 
-    # LLM bypass: skip Claude, run rule-based fallback.
-    if not cfg.llm_enabled:
+    # LLM bypass: runtime toggle wins over compile-time default. Skip
+    # Claude and run the rule-based fallback when either is False.
+    runtime_llm_enabled = get_toggle(conn, "llm_enabled", default=cfg.llm_enabled)
+    if not runtime_llm_enabled or not cfg.llm_enabled:
         return await run_fallback_evaluation(
             conn, candidate_id, candidate,
             cfg=cfg, fallback_reason="llm_disabled",

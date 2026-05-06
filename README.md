@@ -440,6 +440,63 @@ column, and creates `prompt_versions` + `llm_evaluations`. Both LLM and
 rule-fallback writes go to `selected_contract_json` for the future
 executor to read.
 
+## API (Phase 6)
+
+The FastAPI service exposes the full decision pipeline over HTTP +
+Server-Sent Events. Single-user auth via `bcrypt` + DB-backed session
+cookies (HTTP-only, SameSite=Strict). OpenAPI docs at
+`http://localhost:8080/api/docs`.
+
+Auth flow:
+
+```bash
+# Seed your user (interactive password prompt)
+python -m services.api.cli create-user --email me@example.com
+
+# Run the API
+uvicorn services.api.main:app --host 0.0.0.0 --port 8080
+
+# Login (sets tradnex_session cookie)
+curl -c cookies.txt -X POST http://localhost:8080/api/auth/login \
+    -H 'Content-Type: application/json' \
+    -d '{"email":"me@example.com","password":"..."}'
+
+# Use the cookie on subsequent requests
+curl -b cookies.txt http://localhost:8080/api/dashboard/summary
+```
+
+Endpoint groups:
+
+- `/api/auth/*` — login / logout / me
+- `/api/candidates` — list, get, full-context, approve, reject
+- `/api/positions` — list, get, lifecycle
+- `/api/evaluations/{scanner,monitor,llm}` — read-side history
+- `/api/watchlist` — get/set today, history
+- `/api/universe` — list/add/remove
+- `/api/settings` — read/patch the active strategy_configs.settings_json
+- `/api/system/status` + `/api/system/toggle` — system on/off switches
+- `/api/prompts` — Phase 5 prompt versioning surfaced over HTTP
+- `/api/dashboard/{summary,morning-view,active-trades,journal}` — aggregating endpoints
+- `/api/events/stream` — SSE feed of every event row
+
+Login attempts are rate-limited via the `login_attempts` table —
+`LOGIN_LOCKOUT_THRESHOLD` failures inside `LOGIN_LOCKOUT_WINDOW_SECONDS`
+locks the account for `LOGIN_LOCKOUT_DURATION_SECONDS` (defaults: 5 in
+15 min → 1-hour lockout). Successful logins don't clear the audit
+trail; they just stop adding new failure rows.
+
+System toggles (`paused`, `monitor_paused`, `llm_enabled`) live in
+`strategy_configs.settings_json`. The V1 strategy_paused veto, the
+evaluator's LLM bypass, and the monitor cycle's runtime check all read
+the same row — flipping a toggle via `/api/system/toggle` propagates on
+the next scanner / evaluator / monitor tick.
+
+`/api/events/stream` polls the `events` table every
+`SSE_POLL_INTERVAL_SECONDS` (default 1.0s) and emits new rows as SSE
+messages. Pass `?since_id=<int>` or set `Last-Event-ID` to replay on
+reconnect. Phase 8/9 can swap the polling tail for an in-process
+pub/sub bus if event volume grows.
+
 ## Phase status
 
 - **Phase 0 — foundation + CI**: complete
@@ -452,6 +509,6 @@ executor to read.
 - **Phase 3.5 — exit engine + monitor + position lifecycle**: complete
 - **Phase 4 — orchestrator + hard vetoes + calendar service**: complete
 - **Phase 5 — Claude evaluator (with Exa news + prompt versioning)**: complete
-- Phase 6 — FastAPI: not started
+- **Phase 6 — FastAPI service (auth + REST + SSE)**: complete
 - Phase 7 — Next.js dashboard: not started
 - Phase 8 — paper execution: not started

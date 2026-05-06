@@ -235,7 +235,22 @@ async def run_monitor_cycle(
     cycle_id: str | None = None,
 ) -> MonitorCycleResult:
     """Run one monitor cycle: fetch open positions, evaluate each."""
+    from shared.services.runtime_toggles import get_toggle
+
     cid = cycle_id or _new_cycle_id()
+
+    # Phase 6: runtime toggle — `monitor_paused` in strategy_configs.settings_json
+    # short-circuits the whole cycle. Useful for quick "stop touching live
+    # positions" without restarting the service.
+    if bool(get_toggle(conn, "monitor_paused", default=False)):
+        emit(
+            SERVICE_NAME,
+            "info",
+            "monitor_paused_runtime",
+            {"cycle_id": cid},
+        )
+        return MonitorCycleResult(cycle_id=cid)
+
     open_positions = await get_open_positions(conn)
 
     if not open_positions:
