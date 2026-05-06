@@ -13,6 +13,13 @@ Examples:
     python -m services.data.cli iv-rank NVDA
     python -m services.data.cli gex NVDA
     python -m services.data.cli snapshot-iv NVDA
+    python -m services.data.cli regime NVDA
+    python -m services.data.cli gap NVDA
+    python -m services.data.cli halts
+    python -m services.data.cli correlation NVDA AMD
+    python -m services.data.cli correlation-matrix
+    python -m services.data.cli portfolio-greeks
+    python -m services.data.cli compute-correlations
 
 Add --json to any command for raw JSON output.
 """
@@ -26,12 +33,16 @@ from decimal import Decimal
 from typing import Any
 
 from shared.analytics import (
+    compute_correlation_matrix,
     compute_full_analysis,
     compute_options_analysis,
+    detect_gap,
+    get_correlation_matrix,
     gex_per_strike,
     iv_rank,
 )
-from shared.clients.factory import make_market_data_client
+from shared.analytics.options.portfolio_greeks_real import get_current_portfolio_greeks
+from shared.clients.factory import make_halt_feed, make_market_data_client
 from shared.clients.market_data import MarketDataClient
 from shared.clients.mock_market_data import MockDataClient
 from shared.config import settings
@@ -463,6 +474,154 @@ async def _cmd_snapshot_iv(client: MarketDataClient, args: argparse.Namespace) -
         print(f"  {t}: {'written' if ok else 'skipped'}")
 
 
+async def _cmd_regime(client: MarketDataClient, args: argparse.Namespace) -> None:
+    _ensure_mock_iv_seed(client)
+    bars = await client.get_bars(args.ticker, timeframe="1d", limit=300)
+    chain = await client.get_options_chain(args.ticker)
+    conn = get_connection()
+    try:
+        options = compute_options_analysis(chain, conn, garch_result=None)
+    finally:
+        conn.close()
+    fa = await compute_full_analysis(args.ticker, bars, options_analysis=options)
+    r = fa.regime
+    if r is None:
+        print("Regime: unable to classify")
+        return
+    if args.json:
+        _print_json(r)
+        return
+    print(f"Regime — {r.ticker}")
+    print(f"  overall:       {r.overall}  (confidence {r.confidence})")
+    print(f"  trend:         {r.trend_regime}")
+    print(f"  volatility:    {r.volatility_regime}")
+    print(f"  gamma:         {r.gamma_regime}")
+    print(f"  iv:            {r.iv_regime}")
+    print(f"  signals used:  {', '.join(r.signals_used)}")
+    print(f"  description:   {r.description}")
+
+
+async def _cmd_gap(client: MarketDataClient, args: argparse.Namespace) -> None:
+    quote = await client.get_quote(args.ticker)
+    g = detect_gap(quote)
+    if args.json:
+        _print_json(g)
+        return
+    print(f"Gap — {g.ticker}")
+    print(f"  prev close:    {g.prev_close}")
+    print(f"  current:       {g.current_price}")
+    print(f"  gap dollars:   {g.gap_dollars}")
+    print(f"  gap pct:       {g.gap_pct}%")
+    print(f"  severity:      {g.severity}  ({g.direction})")
+    print(f"  alert:         {g.warrants_alert}")
+
+
+async def _cmd_halts(_client: MarketDataClient, args: argparse.Namespace) -> None:
+    feed = make_halt_feed(settings)
+    if args.recent_hours:
+        halts = await feed.get_recent_halts(hours=args.recent_hours)
+    else:
+        halts = await feed.get_active_halts()
+    if args.json:
+        _print_json([h.model_dump(mode="json") for h in halts])
+        return
+    print(f"Halts ({settings.HALT_FEED}) — {len(halts)}")
+    for h in halts:
+        active = "active" if h.is_active else "resumed"
+        print(
+            f"  {h.ticker:<6}  {h.halt_code:<6}  {active:<8}  "
+            f"{h.halt_time.isoformat()}  {h.halt_reason}"
+        )
+
+
+async def _cmd_correlation(client: MarketDataClient, args: argparse.Namespace) -> None:
+    conn = get_connection()
+    try:
+        cached = get_correlation_matrix([args.ticker_a, args.ticker_b], conn)
+        value = cached.get(args.ticker_a, args.ticker_b)
+        from_cache = value is not None
+        if value is None:
+            matrix = await compute_correlation_matrix(
+                [args.ticker_a, args.ticker_b], client, lookback_days=args.lookback
+            )
+            value = matrix.get(args.ticker_a, args.ticker_b)
+    finally:
+        conn.close()
+    if args.json:
+        _print_json(
+            {
+                "a": args.ticker_a,
+                "b": args.ticker_b,
+                "value": str(value),
+                "cached": from_cache,
+            }
+        )
+        return
+    src = "cache" if from_cache else "live"
+    print(f"Correlation ({src}) — {args.ticker_a.upper()} vs {args.ticker_b.upper()}: {value}")
+
+
+async def _cmd_correlation_matrix(_client: MarketDataClient, args: argparse.Namespace) -> None:
+    from shared.clients.mock_market_data import DEFAULT_BASELINES
+
+    conn = get_connection()
+    try:
+        tickers = list(DEFAULT_BASELINES.keys())
+        matrix = get_correlation_matrix(tickers, conn)
+    finally:
+        conn.close()
+    if args.json:
+        _print_json(matrix)
+        return
+    print(f"Correlation matrix — {len(matrix.tickers)} tickers, lookback {matrix.lookback_days}d")
+    if not matrix.tickers:
+        print("  (cache empty — run `compute-correlations` first)")
+        return
+    print("  ", " ".join(f"{t:>6}" for t in matrix.tickers))
+    for a in matrix.tickers:
+        row = " ".join(
+            f"{float(matrix.matrix.get(a, {}).get(b, Decimal('0'))):>6.2f}"
+            for b in matrix.tickers
+        )
+        print(f"  {a:<4}", row)
+
+
+async def _cmd_compute_correlations(client: MarketDataClient, args: argparse.Namespace) -> None:
+    from services.data.correlation_task import run_correlation_task
+
+    conn = get_connection()
+    try:
+        written = await run_correlation_task(client, conn, lookback_days=args.lookback)
+    finally:
+        conn.close()
+    if args.json:
+        _print_json({"rows_written": written})
+        return
+    print(f"Correlation task complete — wrote {written} rows for today")
+
+
+async def _cmd_portfolio_greeks(client: MarketDataClient, args: argparse.Namespace) -> None:
+    conn = get_connection()
+    try:
+        result = await get_current_portfolio_greeks(client, conn)
+    finally:
+        conn.close()
+    if args.json:
+        _print_json(result)
+        return
+    print(f"Portfolio Greeks — {result.positions_count} open positions")
+    print(f"  net delta:     {result.net_delta}")
+    print(f"  net gamma:     {result.net_gamma}")
+    print(f"  net theta:     {result.net_theta}/day")
+    print(f"  net vega:      {result.net_vega}")
+    print(f"  net rho:       {result.net_rho}")
+    print(f"  $ delta:       {result.dollar_delta}")
+    print(f"  $ gamma (1%):  {result.dollar_gamma}")
+    if result.concentration_warnings:
+        for w in result.concentration_warnings:
+            print(f"  warning:       {w}")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="services.data.cli",
@@ -510,6 +669,30 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("snapshot-iv", help="Run IV snapshot once (writes to DB)")
     p.add_argument("tickers", nargs="*")
 
+    p = sub.add_parser("regime", help="Composite regime classification (Tier 4)")
+    p.add_argument("ticker")
+
+    p = sub.add_parser("gap", help="Pre-market / overnight gap detection")
+    p.add_argument("ticker")
+
+    p = sub.add_parser("halts", help="Active / recent trading halts")
+    p.add_argument("--recent-hours", type=int, default=None)
+
+    p = sub.add_parser("correlation", help="Pairwise correlation between two tickers")
+    p.add_argument("ticker_a")
+    p.add_argument("ticker_b")
+    p.add_argument("--lookback", type=int, default=30)
+
+    sub.add_parser("correlation-matrix", help="Cached correlation matrix for the universe")
+
+    p = sub.add_parser(
+        "compute-correlations",
+        help="Run the nightly correlation task once (writes to DB)",
+    )
+    p.add_argument("--lookback", type=int, default=30)
+
+    sub.add_parser("portfolio-greeks", help="Greeks across open positions")
+
     return parser
 
 
@@ -526,10 +709,18 @@ _HANDLERS = {
     "iv-rank": _cmd_iv_rank,
     "gex": _cmd_gex,
     "snapshot-iv": _cmd_snapshot_iv,
+    "regime": _cmd_regime,
+    "gap": _cmd_gap,
+    "halts": _cmd_halts,
+    "correlation": _cmd_correlation,
+    "correlation-matrix": _cmd_correlation_matrix,
+    "compute-correlations": _cmd_compute_correlations,
+    "portfolio-greeks": _cmd_portfolio_greeks,
 }
 
 
 async def _run(args: argparse.Namespace) -> None:
+    run_migrations()
     client = make_market_data_client(settings)
     await _HANDLERS[args.cmd](client, args)
 

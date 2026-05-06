@@ -157,16 +157,48 @@ CLI demos:
 populate the same table via `services/data/iv_snapshot_task.py` (~15:55 ET
 daily for the static universe).
 
+## Tier 4 analytics (Phase 1d)
+
+Closes out the data layer. Five focused modules:
+
+- `shared/analytics/regime.py` — composite categorical state per ticker
+  (`trending_bullish` / `breakout_up` / `capitulation` / etc.) with confidence
+  in [0, 1]. Combines Tier 2 + Tier 3 into one label that's the headline
+  input to Claude's evaluation prompt.
+- `shared/analytics/gap.py` — pre-market / overnight gap severity (none /
+  minor / moderate / severe / extreme).
+- `shared/analytics/correlation.py` — pairwise Pearson on log returns,
+  cached in `correlation_snapshots` (migration 0003), refreshed nightly.
+- `shared/clients/halt_feed.py` + `mock_halt_feed.py` + `nasdaq_halt_feed.py` —
+  abstract `HaltFeed` interface, mock for dev, NASDAQ RSS impl for prod.
+- `shared/analytics/options/portfolio_greeks_real.py` — wires Phase 1c's
+  pure `portfolio_greeks()` to the open-positions table.
+
+Background scheduler in the data service (`AsyncIOScheduler`) runs three jobs:
+IV snapshot at 15:55 ET weekdays, halt monitor every `HALT_POLL_MARKET_SECONDS`
+(self-rate-limits off-hours), correlation matrix nightly at 02:00 ET.
+
+CLI extensions:
+
+    python -m services.data.cli regime NVDA
+    python -m services.data.cli gap NVDA
+    python -m services.data.cli halts
+    python -m services.data.cli correlation NVDA AMD
+    python -m services.data.cli correlation-matrix
+    python -m services.data.cli compute-correlations
+    python -m services.data.cli portfolio-greeks
+
 ## Phase status
 
 - **Phase 0 — foundation + CI**: complete
 - **Phase 1a — data interfaces, mock, Schwab client**: complete (Schwab dormant until API approval)
 - **Phase 1b — Tier 2 analytics**: complete
 - **Phase 1c — Tier 3 options analytics**: complete
-- Phase 1d — Tier 4 (regime, correlation, portfolio aggregation, halt status): not started
-- Phase 2 — scanner + strategy rules: not started
-- Phase 3 — hard vetoes: not started
-- Phase 4 — Claude evaluator: not started
-- Phase 5 — FastAPI: not started
-- Phase 6 — Next.js dashboard: not started
-- Phase 7 — paper execution: not started
+- **Phase 1d — Tier 4 (regime, gap, halt, correlation, portfolio Greeks)**: complete
+- Phase 2 — watchlist + DB infrastructure: not started
+- Phase 3 — scanner + strategy rules: not started
+- Phase 4 — hard vetoes: not started
+- Phase 5 — Claude evaluator: not started
+- Phase 6 — FastAPI: not started
+- Phase 7 — Next.js dashboard: not started
+- Phase 8 — paper execution: not started

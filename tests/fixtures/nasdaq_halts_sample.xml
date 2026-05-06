@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>NASDAQ Trade Halts</title>
+    <link>https://www.nasdaqtrader.com/</link>
+    <description>NASDAQ-published trading halts (sample fixture)</description>
+    <item>
+      <title>NASDAQ Trading Halt — TESTA</title>
+      <pubDate>Mon, 06 May 2026 14:30:00 GMT</pubDate>
+      <description>Issue Symbol: TESTA Halt Date: 05/06/2026 Halt Time: 14:30:00 Halt Reason Code: T1 - News Pending Resumption Time: </description>
+    </item>
+    <item>
+      <title>NASDAQ Trading Halt — TESTB</title>
+      <pubDate>Mon, 06 May 2026 13:15:00 GMT</pubDate>
+      <description>Issue Symbol: TESTB Halt Date: 05/06/2026 Halt Time: 13:15:00 Halt Reason Code: LUDP - Volatility Trading Pause Resumption Time: 13:25:00</description>
+    </item>
+  </channel>
+</rss>

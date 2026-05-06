@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     DATA_CLIENT: Literal["mock", "schwab"] = "mock"
     MOCK_SEED: int = 42
 
+    HALT_FEED: Literal["mock", "nasdaq"] = "mock"
+    HALT_POLL_MARKET_SECONDS: int = 30
+    HALT_POLL_OFF_HOURS_SECONDS: int = 300
+
     SCHWAB_CLIENT_ID: str | None = None
     SCHWAB_CLIENT_SECRET: str | None = None
     SCHWAB_REDIRECT_URI: str = "https://127.0.0.1:8443"

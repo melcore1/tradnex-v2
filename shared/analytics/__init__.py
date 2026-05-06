@@ -3,7 +3,14 @@ from shared.analytics.base import (
     IndicatorResult,
     InsufficientBarsError,
 )
+from shared.analytics.correlation import (
+    CorrelationMatrix,
+    compute_correlation_matrix,
+    get_correlation_matrix,
+    write_correlation_matrix,
+)
 from shared.analytics.full_analysis import FullAnalysis, compute_full_analysis
+from shared.analytics.gap import GapDetection, GapDirection, GapSeverity, detect_gap
 from shared.analytics.levels import (
     EXTENSION_RATIOS,
     RETRACEMENT_RATIOS,
@@ -60,6 +67,16 @@ from shared.analytics.options import (
     vrp,
     zero_dte_analysis,
 )
+from shared.analytics.regime import (
+    GammaRegime,
+    IVRegimeLabel,
+    OverallRegime,
+    RegimeState,
+    RegimeThresholds,
+    TrendRegime,
+    VolRegime,
+    classify_regime,
+)
 from shared.analytics.trend import (
     ADXResult,
     CrossoverState,
@@ -87,6 +104,7 @@ __all__ = [
     "ADXResult",
     "ATRResult",
     "BollingerResult",
+    "CorrelationMatrix",
     "CrossoverState",
     "DealerPosition",
     "EMAResult",
@@ -96,6 +114,16 @@ __all__ = [
     "FlaggedContract",
     "FullAnalysis",
     "FullOptionsAnalysis",
+    "GammaRegime",
+    "GapDetection",
+    "GapDirection",
+    "GapSeverity",
+    "IVRegimeLabel",
+    "OverallRegime",
+    "RegimeState",
+    "RegimeThresholds",
+    "TrendRegime",
+    "VolRegime",
     "GARCHFitError",
     "GARCHResult",
     "GEXRegime",
@@ -136,11 +164,15 @@ __all__ = [
     "adx",
     "atr",
     "bollinger",
+    "classify_regime",
+    "compute_correlation_matrix",
     "compute_full_analysis",
     "compute_options_analysis",
     "detect_crossover",
+    "detect_gap",
     "ema",
     "expected_move",
+    "get_correlation_matrix",
     "fibonacci",
     "garch_forecast",
     "gex_by_expiration",
@@ -164,5 +196,6 @@ __all__ = [
     "volume_vs_avg",
     "vrp",
     "vwap",
+    "write_correlation_matrix",
     "zero_dte_analysis",
 ]

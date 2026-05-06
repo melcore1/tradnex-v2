@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, computed_field
 
@@ -16,6 +17,7 @@ from shared.analytics.levels import (
     support_resistance,
 )
 from shared.analytics.momentum import MACDResult, RSIResult, macd, rsi
+from shared.analytics.regime import RegimeState, RegimeThresholds, classify_regime
 from shared.analytics.trend import (
     ADXResult,
     CrossoverState,
@@ -38,6 +40,9 @@ from shared.analytics.volatility import (
 )
 from shared.analytics.volume import VWAPResult, vwap
 from shared.schemas.market import Bar
+
+if TYPE_CHECKING:
+    from shared.analytics.options.full_options_analysis import FullOptionsAnalysis
 
 
 class FullAnalysis(BaseModel):
@@ -73,6 +78,8 @@ class FullAnalysis(BaseModel):
 
     vwap: VWAPResult | None
 
+    regime: RegimeState | None = None
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def summary(self) -> str:
@@ -87,6 +94,8 @@ class FullAnalysis(BaseModel):
         parts.append(f"ATR {self.atr.regime}")
         if self.support_resistance.nearest_resistance is not None:
             parts.append(f"near resistance {self.support_resistance.nearest_resistance}")
+        if self.regime is not None:
+            parts.append(f"regime {self.regime.overall} (conf {self.regime.confidence})")
         return ", ".join(parts)
 
 
@@ -94,12 +103,17 @@ async def compute_full_analysis(
     ticker: str,
     bars: list[Bar],
     timeframe: str = "1d",
+    options_analysis: FullOptionsAnalysis | None = None,
+    regime_thresholds: RegimeThresholds | None = None,
 ) -> FullAnalysis:
-    """Compute every Tier 2 analytic from a ticker's bars.
+    """Compute every Tier 2 analytic plus the regime state from a ticker's bars.
 
     Synchronous indicators run inline. GARCH fit (the slow one) is dispatched
     to a worker thread via asyncio.to_thread() so concurrent compute calls
     don't serialize on it.
+
+    Pass `options_analysis` to enrich the regime classifier with gamma + IV
+    components; otherwise those components fall back to 'unknown'.
     """
     if not bars:
         raise ValueError("bars must not be empty")
@@ -139,7 +153,7 @@ async def compute_full_analysis(
         garch_r = None
         monte_carlo_r = None
 
-    return FullAnalysis(
+    partial = FullAnalysis(
         ticker=ticker.upper(),
         spot=Decimal(str(bars[-1].close)),
         timestamp=datetime.now(UTC),
@@ -162,4 +176,9 @@ async def compute_full_analysis(
         fibonacci=fibonacci_r,
         support_resistance=sr_r,
         vwap=vwap_r,
+        regime=None,
     )
+
+    thresholds = regime_thresholds or RegimeThresholds()
+    regime_state = classify_regime(partial, options_analysis, bars, thresholds)
+    return partial.model_copy(update={"regime": regime_state})

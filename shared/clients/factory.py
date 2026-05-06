@@ -1,5 +1,8 @@
+from shared.clients.halt_feed import HaltFeed
 from shared.clients.market_data import MarketDataClient
+from shared.clients.mock_halt_feed import MockHaltFeed
 from shared.clients.mock_market_data import MockDataClient
+from shared.clients.nasdaq_halt_feed import NasdaqHaltFeed
 from shared.clients.schwab_market_data import SchwabDataClient
 from shared.config import Settings
 
@@ -23,3 +26,16 @@ def make_market_data_client(config: Settings) -> MarketDataClient:
             )
         case _:
             raise ValueError(f"Unknown DATA_CLIENT: {config.DATA_CLIENT}")
+
+
+def make_halt_feed(config: Settings) -> HaltFeed:
+    """Construct the halt feed selected by Settings.HALT_FEED."""
+    match config.HALT_FEED:
+        case "mock":
+            return MockHaltFeed()
+        case "nasdaq":
+            return NasdaqHaltFeed(
+                poll_interval_seconds=config.HALT_POLL_MARKET_SECONDS,
+            )
+        case _:
+            raise ValueError(f"Unknown HALT_FEED: {config.HALT_FEED}")
