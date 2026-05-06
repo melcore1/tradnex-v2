@@ -330,6 +330,61 @@ Configurable thresholds live in `shared/strategy/exit_settings.py`
 `iv_crush_critical_pct`, `monitor_window_start_et`, `monitor_enabled`,
 etc.). Phase 7 will load them from `strategy_configs.settings_json`.
 
+## Orchestrator + hard vetoes (Phase 4)
+
+`services/orchestrator/` is the routing layer between detection (scanner /
+monitor) and decision (Phase 5 Claude). It picks up candidates in
+`pending` status, runs hard vetoes, persists the trace, and transitions
+them to `pending_llm_evaluation`, `pending_human_approval` (exit
+auto-close), or `vetoed`.
+
+**Asymmetric veto sets**: 10 entry vetoes (V1–V10), 2 exit vetoes
+(V_E1–V_E2). Exit set is light because events block new exposure, not
+closing existing exposure.
+
+| | Entry vetoes | Exit vetoes |
+|--|--|--|
+| V1 | strategy_paused (config flag) | |
+| V2 | outside_market_window (09:45–15:00 ET) | |
+| V3 | weekly_trade_cap (default 10) | |
+| V4 | weekly_loss_circuit_breaker (default −3% of notional) | |
+| V5 | concurrent_positions_cap (default 5) | |
+| V6 | earnings_blackout (−7 days … +1 day) | |
+| V7 | macro_event_window (24h around FOMC/CPI/NFP) | |
+| V8 | active_halt (HaltFeed) | |
+| V9 | vix_spike (deferred — config-flag-disabled in v1) | |
+| V10 | duplicate_candidate (30-min window) | |
+| V_E1 | | outside_close_window (after 15:55 ET) |
+| V_E2 | | duplicate_exit (5-min window per position) |
+
+Vetoes are pure async functions: `(candidate, ctx) -> VetoResult`. A
+buggy veto raising an exception is caught by the runner and converted
+into a `failed=False` result with the error in details — never crashes
+the orchestrator.
+
+**Triggering**: scanner / monitor call `asyncio.create_task(...)` after
+persisting a candidate, so the orchestrator runs immediately. A backup
+poller every 5 min catches stragglers stuck in `pending` (e.g. if the
+inline trigger errored).
+
+**Calendar**: a nightly job at 06:00 ET pulls the next 14 days of
+economic + earnings events from Finnhub (or `MockCalendarClient` when no
+`FINNHUB_API_KEY`) into the `calendar_cache` table. Vetoes V6 and V7
+read from the cache — they don't hit the network on the hot path.
+
+CLI:
+
+    python -m services.orchestrator.cli process <candidate_id>
+    python -m services.orchestrator.cli process-pending
+    python -m services.orchestrator.cli vetoes <candidate_id>
+    python -m services.orchestrator.cli calendar [--days 14]
+    python -m services.orchestrator.cli refresh-calendar
+
+The `candidates.status` CHECK was widened in migration 0007 to admit the
+new orchestrator states (`processing_vetoes`, `pending_llm_evaluation`,
+`rejected_by_llm`, `rejected_by_user`); the recreation runs inside
+`PRAGMA foreign_keys = OFF` so existing FK references survive intact.
+
 ## Phase status
 
 - **Phase 0 — foundation + CI**: complete
@@ -340,8 +395,8 @@ etc.). Phase 7 will load them from `strategy_configs.settings_json`.
 - **Phase 2 — watchlist + DB infrastructure**: complete
 - **Phase 3 — scanner + 6-rule long options momentum strategy**: complete
 - **Phase 3.5 — exit engine + monitor + position lifecycle**: complete
-- Phase 4 — orchestrator + hard vetoes: not started
-- Phase 5 — Claude evaluator: not started
+- **Phase 4 — orchestrator + hard vetoes + calendar service**: complete
+- Phase 5 — Claude evaluator (with Exa news): not started
 - Phase 6 — FastAPI: not started
 - Phase 7 — Next.js dashboard: not started
 - Phase 8 — paper execution: not started

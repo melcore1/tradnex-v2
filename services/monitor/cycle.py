@@ -26,6 +26,44 @@ from shared.strategy.exit_signals.base import ExitSignalTrace
 SERVICE_NAME = "monitor"
 
 
+async def _safe_orchestrator_call(candidate_id: int) -> None:
+    """Trigger orchestrator with a fresh DB connection. Errors don't
+    propagate; the orchestrator's poller catches stragglers."""
+    from datetime import UTC, datetime
+
+    from services.orchestrator.process_candidate import process_candidate
+    from shared.clients.factory import make_halt_feed
+    from shared.config import settings as cfg
+    from shared.db import get_connection
+    from shared.services.calendar_service import CalendarService
+    from shared.strategy.vetoes.base import VetoContext, VetoSettings
+
+    conn = get_connection()
+    try:
+        halt_feed = make_halt_feed(cfg)
+        ctx = VetoContext(
+            conn=conn,
+            calendar_service=CalendarService(conn),
+            halt_feed=halt_feed,
+            settings=VetoSettings(),
+            current_time_utc=datetime.now(UTC),
+        )
+        await process_candidate(candidate_id, ctx)
+    except Exception as e:
+        emit(
+            SERVICE_NAME,
+            "error",
+            "orchestrator_trigger_failed",
+            {
+                "candidate_id": candidate_id,
+                "error": str(e)[:300],
+                "error_type": type(e).__name__,
+            },
+        )
+    finally:
+        conn.close()
+
+
 class MonitorCycleResult(BaseModel):
     cycle_id: str
     positions_evaluated: int = 0
@@ -110,6 +148,9 @@ async def evaluate_position(
     if trace.auto_close_triggered:
         candidate = _build_candidate(position, trace)
         candidate_id = await persist_exit_candidate(conn, candidate)
+        import asyncio as _asyncio
+
+        _asyncio.create_task(_safe_orchestrator_call(candidate_id))
         await emit_lifecycle_event(
             conn,
             position.id,
@@ -124,6 +165,9 @@ async def evaluate_position(
     elif trace.needs_claude:
         candidate = _build_candidate(position, trace)
         candidate_id = await persist_exit_candidate(conn, candidate)
+        import asyncio as _asyncio
+
+        _asyncio.create_task(_safe_orchestrator_call(candidate_id))
         await emit_lifecycle_event(
             conn,
             position.id,

@@ -1,5 +1,8 @@
+from shared.clients.calendar_feed import CalendarFeed
+from shared.clients.finnhub_calendar import FinnhubCalendarClient
 from shared.clients.halt_feed import HaltFeed
 from shared.clients.market_data import MarketDataClient
+from shared.clients.mock_calendar import MockCalendarClient
 from shared.clients.mock_halt_feed import MockHaltFeed
 from shared.clients.mock_market_data import MockDataClient
 from shared.clients.nasdaq_halt_feed import NasdaqHaltFeed
@@ -39,3 +42,12 @@ def make_halt_feed(config: Settings) -> HaltFeed:
             )
         case _:
             raise ValueError(f"Unknown HALT_FEED: {config.HALT_FEED}")
+
+
+def make_calendar_client(config: Settings) -> CalendarFeed:
+    """Pick mock vs Finnhub based on FINNHUB_API_KEY presence. The mock
+    auto-seeds plausible upcoming events; the Finnhub client hits the live
+    API and degrades to empty lists on errors."""
+    if config.FINNHUB_API_KEY:
+        return FinnhubCalendarClient(config.FINNHUB_API_KEY)
+    return MockCalendarClient()

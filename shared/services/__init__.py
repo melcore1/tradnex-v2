@@ -1,3 +1,4 @@
+from shared.services.calendar_service import CalendarService
 from shared.services.positions import (
     LifecycleEvent,
     emit_lifecycle_event,
@@ -29,6 +30,7 @@ from shared.services.watchlist import (
 
 __all__ = [
     "DEFAULT_UNIVERSE",
+    "CalendarService",
     "InvalidTickerError",
     "LifecycleEvent",
     "TickerNotInUniverseError",

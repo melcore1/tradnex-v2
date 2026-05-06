@@ -89,6 +89,26 @@ async def _bootstrap() -> tuple[bool, AsyncIOScheduler | None]:
         finally:
             conn.close()
 
+    async def _calendar_refresh_job() -> None:
+        from services.data.calendar_refresh_task import refresh_calendar_cache
+        from shared.clients.factory import make_calendar_client
+        from shared.services.universe import get_universe
+
+        conn = get_connection()
+        try:
+            calendar_client = make_calendar_client(settings)
+            universe = await get_universe(conn)
+            await refresh_calendar_cache(calendar_client, conn, universe)
+        except Exception as e:
+            emit(
+                SERVICE_NAME,
+                "error",
+                "calendar_refresh_failed",
+                {"error": str(e)[:300], "error_type": type(e).__name__},
+            )
+        finally:
+            conn.close()
+
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
         _halt_tick,
@@ -108,6 +128,13 @@ async def _bootstrap() -> tuple[bool, AsyncIOScheduler | None]:
         _correlation_job,
         CronTrigger(hour=6, minute=0),
         id="correlation_nightly",
+        replace_existing=True,
+    )
+    # 06:00 ET ≈ 10:00 UTC during DST
+    scheduler.add_job(
+        _calendar_refresh_job,
+        CronTrigger(hour=10, minute=0),
+        id="calendar_refresh_nightly",
         replace_existing=True,
     )
     scheduler.start()
