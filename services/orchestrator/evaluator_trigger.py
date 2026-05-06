@@ -25,11 +25,20 @@ async def safe_evaluator_call(candidate_id: int) -> None:
         from shared.clients.factory import make_claude_client, make_exa_client
         from shared.config import settings as cfg
         from shared.db import get_connection
+        from shared.services.encryption import maybe_get_encryption
         from shared.strategy.settings import StrategySettings
 
         evaluator_cfg = StrategySettings().evaluator
         claude = make_claude_client(cfg)
-        exa = make_exa_client(cfg)
+
+        # Build the Exa client with credentials store lookup.
+        creds_conn = get_connection()
+        try:
+            exa = make_exa_client(
+                cfg, conn=creds_conn, encryption=maybe_get_encryption()
+            )
+        finally:
+            creds_conn.close()
 
         claim_conn = get_connection()
         try:

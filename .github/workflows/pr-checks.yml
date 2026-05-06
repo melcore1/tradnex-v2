@@ -32,6 +32,8 @@ jobs:
       - name: Pytest
         env:
           DATABASE_PATH: /tmp/tradnex_ci.db
+          # Phase 8a: deterministic test-only Fernet key (NOT a real secret).
+          ENCRYPTION_KEY: vJEKnyT7ulyHCYGFY7nBh-XqMhXpwnBJ7-kIPxKj-Rs=
         run: pytest tests/ -v
 
   frontend:
@@ -98,6 +100,8 @@ jobs:
       - name: Run API in background
         env:
           DATABASE_PATH: /tmp/tradnex_apitypes.db
+          # Phase 8a: deterministic test-only Fernet key (NOT a real secret).
+          ENCRYPTION_KEY: vJEKnyT7ulyHCYGFY7nBh-XqMhXpwnBJ7-kIPxKj-Rs=
         run: |
           uvicorn services.api.main:app --host 127.0.0.1 --port 8080 > api.log 2>&1 &
           for i in $(seq 1 30); do

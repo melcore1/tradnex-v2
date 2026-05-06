@@ -21,6 +21,10 @@ from shared.services.auth import (
     get_session,
     get_user_by_id,
 )
+from shared.services.encryption import (
+    EncryptionService,
+    InvalidEncryptionKeyError,
+)
 
 
 def get_db() -> Iterator[sqlite3.Connection]:
@@ -94,3 +98,36 @@ async def get_current_user(
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+def get_encryption() -> EncryptionService:
+    """Build an EncryptionService from settings, raising 503 when the
+    master key isn't configured. Endpoints that handle credentials depend
+    on this; readers that don't touch secrets shouldn't.
+
+    Reads `shared.config.settings` lazily at call time so test helpers
+    that reload the config module after monkey-patching `ENCRYPTION_KEY`
+    pick up the new value without needing to also reload this module.
+    """
+    from shared import config as _config
+
+    key = _config.settings.ENCRYPTION_KEY
+    if not key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "ENCRYPTION_KEY is not configured. Generate one via "
+                "`python -m services.api.cli generate-encryption-key` and "
+                "add it to .env, then restart the API."
+            ),
+        )
+    try:
+        return EncryptionService(key)
+    except InvalidEncryptionKeyError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        ) from e
+
+
+Encryption = Annotated[EncryptionService, Depends(get_encryption)]

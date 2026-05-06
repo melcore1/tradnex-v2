@@ -92,11 +92,14 @@ async def _bootstrap() -> tuple[bool, AsyncIOScheduler | None]:
     async def _calendar_refresh_job() -> None:
         from services.data.calendar_refresh_task import refresh_calendar_cache
         from shared.clients.factory import make_calendar_client
+        from shared.services.encryption import maybe_get_encryption
         from shared.services.universe import get_universe
 
         conn = get_connection()
         try:
-            calendar_client = make_calendar_client(settings)
+            calendar_client = make_calendar_client(
+                settings, conn=conn, encryption=maybe_get_encryption()
+            )
             universe = await get_universe(conn)
             await refresh_calendar_cache(calendar_client, conn, universe)
         except Exception as e:

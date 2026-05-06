@@ -49,6 +49,10 @@ export const queryKeys = {
     active: (template: string) => ['prompts', template, 'active'] as const,
     history: (template: string) => ['prompts', template, 'history'] as const,
   },
+  credentials: {
+    all: ['credentials'] as const,
+    detail: (type: string) => ['credentials', type] as const,
+  },
   dashboard: {
     all: ['dashboard'] as const,
     summary: ['dashboard', 'summary'] as const,

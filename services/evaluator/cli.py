@@ -43,9 +43,17 @@ def _print_json(obj: Any) -> None:
 
 
 async def _cmd_evaluate(args: argparse.Namespace) -> None:
+    from shared.services.encryption import maybe_get_encryption
+
     cfg = StrategySettings().evaluator
     claude = make_claude_client(settings)
-    exa = make_exa_client(settings)
+    creds_conn = get_connection()
+    try:
+        exa = make_exa_client(
+            settings, conn=creds_conn, encryption=maybe_get_encryption()
+        )
+    finally:
+        creds_conn.close()
     claim_conn = get_connection()
     try:
         claimed = await claim_candidate_for_llm_eval(claim_conn, args.candidate_id)
@@ -214,8 +222,16 @@ async def _cmd_prompt_rollback(args: argparse.Namespace) -> None:
 
 
 async def _cmd_health(args: argparse.Namespace) -> None:
+    from shared.services.encryption import maybe_get_encryption
+
     claude = make_claude_client(settings)
-    exa = make_exa_client(settings)
+    creds_conn = get_connection()
+    try:
+        exa = make_exa_client(
+            settings, conn=creds_conn, encryption=maybe_get_encryption()
+        )
+    finally:
+        creds_conn.close()
     claude_ok = await claude.health_check()
     exa_ok = await exa.health_check()
     if args.json:

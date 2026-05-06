@@ -22,6 +22,7 @@ from services.api.middleware import (
 from services.api.routers import (
     auth,
     candidates,
+    credentials,
     dashboard,
     evaluations,
     events,
@@ -35,14 +36,61 @@ from services.api.routers import settings as settings_router
 from shared.config import settings
 from shared.db import get_connection, run_migrations
 from shared.events import emit
+from shared.services.credentials import migrate_env_credentials
+from shared.services.encryption import (
+    EncryptionService,
+    InvalidEncryptionKeyError,
+)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Startup: apply migrations and warn if no users exist."""
+    """Startup: apply migrations, run env→DB credential migration, warn if
+    no users exist."""
     applied = run_migrations()
     if applied:
         emit("api", "info", "migrations_applied", {"files": applied})
+
+    # Phase 8a: best-effort env → DB credential migration. Skipped (with a
+    # warning) when ENCRYPTION_KEY isn't configured so dev environments
+    # without secrets can still boot the API for testing.
+    if settings.ENCRYPTION_KEY:
+        try:
+            encryption = EncryptionService(settings.ENCRYPTION_KEY)
+            conn = get_connection()
+            try:
+                migrated = migrate_env_credentials(conn, encryption)
+            finally:
+                conn.close()
+            if migrated:
+                emit(
+                    "api",
+                    "info",
+                    "env_credentials_migrated_summary",
+                    {"count": len(migrated), "types": list(migrated)},
+                )
+        except InvalidEncryptionKeyError as e:
+            emit(
+                "api",
+                "error",
+                "encryption_key_invalid",
+                {"error": str(e)[:300]},
+            )
+    else:
+        emit(
+            "api",
+            "warn",
+            "encryption_key_missing",
+            {
+                "hint": (
+                    "ENCRYPTION_KEY is not configured. Generate one via "
+                    "`python -m services.api.cli generate-encryption-key` "
+                    "and add it to .env. Until then, the credentials store "
+                    "is unavailable."
+                ),
+            },
+        )
+
     conn = get_connection()
     try:
         user_count = int(
@@ -159,3 +207,6 @@ app.include_router(prompts.router, prefix="/api/prompts", tags=["prompts"])
 app.include_router(system.router, prefix="/api/system", tags=["system"])
 app.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"])
 app.include_router(events.router, prefix="/api/events", tags=["events"])
+app.include_router(
+    credentials.router, prefix="/api/credentials", tags=["credentials"]
+)

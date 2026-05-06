@@ -53,6 +53,11 @@ export const EVENT_TO_QUERIES: Record<string, readonly QueryKey[]> = {
   watchlist_ticker_removed: [queryKeys.watchlist.all],
   universe_changed: [queryKeys.universe.all],
   calendar_refreshed: [queryKeys.dashboard.morningView],
+
+  // ---- Credentials (Phase 8a) ----
+  credentials_updated: [queryKeys.credentials.all],
+  credentials_deleted: [queryKeys.credentials.all],
+  env_credential_migrated: [queryKeys.credentials.all],
 }
 
 export interface SseEventEnvelope {

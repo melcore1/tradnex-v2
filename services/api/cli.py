@@ -4,6 +4,7 @@
     python -m services.api.cli list-users
     python -m services.api.cli revoke-sessions --user-id 1
     python -m services.api.cli show-config
+    python -m services.api.cli generate-encryption-key
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from shared.services.auth import (
     list_users,
     revoke_all_sessions,
 )
+from shared.services.encryption import EncryptionService
 
 
 def _print_json(obj: Any) -> None:
@@ -88,6 +90,21 @@ async def _cmd_revoke_sessions(args: argparse.Namespace) -> None:
     print(f"Revoked {n} active session(s) for user {args.user_id}")
 
 
+def _cmd_generate_encryption_key(args: argparse.Namespace) -> None:
+    """Print a fresh Fernet master key. User adds it to .env as ENCRYPTION_KEY."""
+    key = EncryptionService.generate_master_key()
+    if args.json:
+        _print_json({"encryption_key": key})
+        return
+    print("# Add the following line to .env (replacing any existing ENCRYPTION_KEY):")
+    print(f"ENCRYPTION_KEY={key}")
+    print()
+    print(
+        "# WARNING: rotating this key invalidates every credential row in the "
+        "DB.\n# Keep it secret and back it up alongside the .env file."
+    )
+
+
 def _cmd_show_config(args: argparse.Namespace) -> None:
     """Print API config (secrets masked)."""
     safe_keys = {
@@ -137,6 +154,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_sc = sub.add_parser("show-config", help="Print API config (secrets masked)")
     p_sc.add_argument("--json", action="store_true")
 
+    p_gk = sub.add_parser(
+        "generate-encryption-key",
+        help="Generate a fresh master Fernet key (for ENCRYPTION_KEY in .env)",
+    )
+    p_gk.add_argument("--json", action="store_true")
+
     return parser
 
 
@@ -150,6 +173,10 @@ _ASYNC_HANDLERS = {
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
+    if args.cmd == "generate-encryption-key":
+        # No DB needed; pure key generation.
+        _cmd_generate_encryption_key(args)
+        return
     run_migrations()
     if args.cmd == "show-config":
         _cmd_show_config(args)

@@ -21,21 +21,27 @@ from services.orchestrator.persistence import (
     fetch_pending_candidate_ids,
 )
 from services.orchestrator.process_candidate import process_candidate
-from shared.clients.factory import make_halt_feed, make_market_data_client
+from shared.clients.factory import (
+    make_calendar_client,
+    make_halt_feed,
+    make_market_data_client,
+)
 from shared.config import settings
 from shared.db import get_connection, run_migrations
 from shared.services.calendar_service import CalendarService
+from shared.services.encryption import maybe_get_encryption
 from shared.strategy.vetoes.base import VetoContext, VetoSettings
 
 
-def _build_calendar_client() -> Any:
-    """Pick mock vs Finnhub based on FINNHUB_API_KEY presence."""
-    from shared.clients.finnhub_calendar import FinnhubCalendarClient
-    from shared.clients.mock_calendar import MockCalendarClient
+def _build_calendar_client(conn: Any | None = None) -> Any:
+    """Resolve the calendar client via the credential-aware factory.
 
-    if settings.FINNHUB_API_KEY:
-        return FinnhubCalendarClient(settings.FINNHUB_API_KEY)
-    return MockCalendarClient()
+    Lookup order: encrypted credentials store → env (Phase 8a fallback)
+    → mock.
+    """
+    return make_calendar_client(
+        settings, conn=conn, encryption=maybe_get_encryption()
+    )
 
 
 async def _build_ctx(conn: Any) -> VetoContext:
@@ -149,7 +155,7 @@ async def _cmd_refresh_calendar(args: argparse.Namespace) -> None:
 
     conn = get_connection()
     try:
-        client = _build_calendar_client()
+        client = _build_calendar_client(conn)
         universe = await get_universe(conn)
         econ_count, earn_count = await refresh_calendar_cache(client, conn, universe)
         if args.json:

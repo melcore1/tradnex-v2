@@ -561,6 +561,49 @@ No schema migrations.
 See [`frontend/README.md`](frontend/README.md) for layout, scripts,
 testing philosophy, and the SSE→TanStack Query bridge.
 
+## Credentials (Phase 8a)
+
+Provider keys (Finnhub, Exa, Alpaca paper/live, Schwab OAuth tokens) live
+in the encrypted `credentials` table — not in `.env`. The frontend's
+`/settings/credentials` page is the source of truth: keys are
+write-only over the wire, encrypted at rest with Fernet, and never
+echoed back.
+
+The only env-resident credential is the **master key**:
+
+```bash
+# One-time: generate the master Fernet key
+python -m services.api.cli generate-encryption-key
+# → ENCRYPTION_KEY=<base64>
+# Add that line to .env, then restart the stack.
+```
+
+Rotating `ENCRYPTION_KEY` invalidates every existing credentials row.
+Back it up alongside the `.env` file.
+
+### Auto-migration from env
+
+Existing installs with `FINNHUB_API_KEY` / `EXA_API_KEY` set in `.env`
+get auto-migrated on first startup with `ENCRYPTION_KEY` configured —
+the API lifespan reads the env values, encrypts them, inserts into the
+`credentials` table, and emits an `env_credential_migrated` event per
+key. Subsequent restarts skip migration when DB rows already exist; env
+values are ignored from then on.
+
+After migration, leave the `FINNHUB_API_KEY` / `EXA_API_KEY` lines in
+`.env` blank and rotate the keys via the UI.
+
+### Endpoints (auth required)
+
+- `GET /api/credentials` — list metadata for all configured types
+- `GET /api/credentials/{type}` — single record (404 when not configured)
+- `PUT /api/credentials/{type}` — upsert; body `{secrets: {...}, notes?}`
+- `DELETE /api/credentials/{type}`
+
+Valid types: `alpaca_paper`, `alpaca_live`, `schwab_oauth`, `finnhub`,
+`exa`. Alpaca paper/live are scaffolding in 8a (broker integration lands
+in 8b). Schwab is gated behind a "Coming soon" card pending API approval.
+
 ## Phase status
 
 - **Phase 0 — foundation + CI**: complete
@@ -575,4 +618,6 @@ testing philosophy, and the SSE→TanStack Query bridge.
 - **Phase 5 — Claude evaluator (with Exa news + prompt versioning)**: complete
 - **Phase 6 — FastAPI service (auth + REST + SSE)**: complete
 - **Phase 7 — Next.js dashboard + Caddy reverse proxy**: complete
-- Phase 8 — paper execution: not started
+- **Phase 8a — encryption + credentials store**: complete
+- Phase 8b — broker abstraction + Alpaca paper execution: not started
+- Phase 8c — V_LIVE vetoes + live trading mode + Schwab OAuth: not started

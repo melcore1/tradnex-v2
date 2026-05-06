@@ -45,5 +45,11 @@ class Settings(BaseSettings):
     CORS_ALLOW_ORIGINS: str = ""  # comma-separated; empty = same-origin only
     SSE_POLL_INTERVAL_SECONDS: float = 1.0
 
+    # Phase 8a — encrypted credentials store.
+    # Master Fernet key for the credentials table. The ONLY env-resident
+    # credential after Phase 8a; all provider keys live in the DB.
+    # Generate via `python -m services.api.cli generate-encryption-key`.
+    ENCRYPTION_KEY: str = ""
+
 
 settings = Settings()  # type: ignore[call-arg]

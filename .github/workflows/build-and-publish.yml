@@ -37,6 +37,9 @@ jobs:
       - name: Pytest
         env:
           DATABASE_PATH: /tmp/tradnex_ci.db
+          # Phase 8a: deterministic test-only Fernet key (NOT a real secret).
+          # Required for tests/test_encryption.py and tests/test_api_credentials.py.
+          ENCRYPTION_KEY: vJEKnyT7ulyHCYGFY7nBh-XqMhXpwnBJ7-kIPxKj-Rs=
         run: pytest tests/ -v
 
   build:

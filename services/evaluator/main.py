@@ -98,9 +98,20 @@ async def _bootstrap() -> tuple[AsyncIOScheduler, EvaluationQueue]:
 
 async def _run_forever(queue: EvaluationQueue) -> None:
     """Worker loop pulling from the queue."""
+    from shared.services.encryption import maybe_get_encryption
+
     cfg = StrategySettings().evaluator
     claude = make_claude_client(settings)
-    exa = make_exa_client(settings)
+    # Resolve the Exa API key once at startup. The client stores the key
+    # for its lifetime; if credentials change while the worker is running,
+    # the operator restarts the service (Phase 8c will add hot-reload).
+    conn = get_connection()
+    try:
+        exa = make_exa_client(
+            settings, conn=conn, encryption=maybe_get_encryption()
+        )
+    finally:
+        conn.close()
     while True:
         did_work = await queue.process_one(
             claude=claude, exa=exa, cfg=cfg,

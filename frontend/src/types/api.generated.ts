@@ -707,6 +707,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Credentials
+         * @description All configured credentials, metadata only. Always returns a list
+         *     (empty when nothing is configured).
+         */
+        get: operations["list_credentials_api_credentials_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/credentials/{credential_type}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Credential
+         * @description Single credential metadata. 404 when not configured.
+         */
+        get: operations["get_credential_api_credentials__credential_type__get"];
+        /**
+         * Upsert Credential Endpoint
+         * @description Insert or replace a credential. Body's `secrets` dict is encrypted
+         *     before write. The response NEVER echoes the secrets back.
+         */
+        put: operations["upsert_credential_endpoint_api_credentials__credential_type__put"];
+        post?: never;
+        /**
+         * Delete Credential Endpoint
+         * @description Remove the credential row. 404 when not configured (idempotent
+         *     callers should check `GET` first or accept 404).
+         */
+        delete: operations["delete_credential_endpoint_api_credentials__credential_type__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -790,6 +841,37 @@ export interface components {
             created_ts: string;
             /** Summary Text */
             summary_text: string;
+        };
+        /**
+         * CredentialRecordResponse
+         * @description Public-facing credential metadata. NEVER includes secret values.
+         */
+        CredentialRecordResponse: {
+            /**
+             * Credential Type
+             * @enum {string}
+             */
+            credential_type: "alpaca_paper" | "alpaca_live" | "schwab_oauth" | "finnhub" | "exa";
+            /** Is Configured */
+            is_configured: boolean;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Refresh Token Expires At */
+            refresh_token_expires_at?: string | null;
+            /** Last Used Ts */
+            last_used_ts?: string | null;
+            /**
+             * Created Ts
+             * Format: date-time
+             */
+            created_ts: string;
+            /**
+             * Updated Ts
+             * Format: date-time
+             */
+            updated_ts: string;
+            /** Notes */
+            notes?: string | null;
         };
         /** DashboardSummary */
         DashboardSummary: {
@@ -1051,6 +1133,22 @@ export interface components {
         UniverseResponse: {
             /** Tickers */
             tickers: string[];
+        };
+        /**
+         * UpsertCredentialRequest
+         * @description Body for PUT /api/credentials/{type}.
+         *
+         *     `secrets` is a free-form dict — provider-specific shape (e.g. Alpaca
+         *     uses `{api_key, api_secret}`, Finnhub uses `{api_key}`). Validated
+         *     server-side per provider in Phase 8b/8c.
+         */
+        UpsertCredentialRequest: {
+            /** Secrets */
+            secrets: {
+                [key: string]: unknown;
+            };
+            /** Notes */
+            notes?: string | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -2340,6 +2438,138 @@ export interface operations {
                 content: {
                     "application/json": unknown;
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_credentials_api_credentials_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                tradnex_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CredentialRecordResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_credential_api_credentials__credential_type__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                credential_type: "alpaca_paper" | "alpaca_live" | "schwab_oauth" | "finnhub" | "exa";
+            };
+            cookie?: {
+                tradnex_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CredentialRecordResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upsert_credential_endpoint_api_credentials__credential_type__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                credential_type: "alpaca_paper" | "alpaca_live" | "schwab_oauth" | "finnhub" | "exa";
+            };
+            cookie?: {
+                tradnex_session?: string | null;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpsertCredentialRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CredentialRecordResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_credential_endpoint_api_credentials__credential_type__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                credential_type: "alpaca_paper" | "alpaca_live" | "schwab_oauth" | "finnhub" | "exa";
+            };
+            cookie?: {
+                tradnex_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

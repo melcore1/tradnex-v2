@@ -65,6 +65,45 @@ class FullContextResponse(BaseModel):
     copyable_text: str
 
 
+# ---- Credentials (Phase 8a) ----
+
+# Allowed credential_type values must mirror the CHECK constraint in
+# `migrations/0010_credentials.sql` and the CredentialType literal in
+# `shared/services/credentials.py`.
+CredentialTypeLiteral = Literal[
+    "alpaca_paper",
+    "alpaca_live",
+    "schwab_oauth",
+    "finnhub",
+    "exa",
+]
+
+
+class CredentialRecordResponse(BaseModel):
+    """Public-facing credential metadata. NEVER includes secret values."""
+
+    credential_type: CredentialTypeLiteral
+    is_configured: bool
+    expires_at: datetime | None = None
+    refresh_token_expires_at: datetime | None = None
+    last_used_ts: datetime | None = None
+    created_ts: datetime
+    updated_ts: datetime
+    notes: str | None = None
+
+
+class UpsertCredentialRequest(BaseModel):
+    """Body for PUT /api/credentials/{type}.
+
+    `secrets` is a free-form dict — provider-specific shape (e.g. Alpaca
+    uses `{api_key, api_secret}`, Finnhub uses `{api_key}`). Validated
+    server-side per provider in Phase 8b/8c.
+    """
+
+    secrets: dict[str, Any] = Field(min_length=1)
+    notes: str | None = None
+
+
 class ApproveRequest(BaseModel):
     notes: str | None = None
     quantity_override: int | None = Field(default=None, ge=1)
