@@ -100,6 +100,16 @@ async def process_candidate(
             "vetoes_failed": trace.failed_veto_names,
         },
     )
+    # Phase 5: trigger the LLM evaluator immediately when we route the
+    # candidate to LLM evaluation. Fire-and-forget; the standalone evaluator
+    # service / poller catch anything that fails or races. The atomic claim
+    # inside the queue ensures exactly-once processing.
+    if new_status == "pending_llm_evaluation":
+        import asyncio as _asyncio
+
+        from services.orchestrator.evaluator_trigger import safe_evaluator_call
+
+        _asyncio.create_task(safe_evaluator_call(candidate_id))
     return ProcessResult(
         candidate_id=candidate_id,
         already_processed=False,

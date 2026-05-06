@@ -106,6 +106,11 @@ class EntryCandidate(BaseModel):
 
     shortlist: list[OptionContract] | None = None
 
+    # Phase 5: chosen contract from shortlist. Populated by either the
+    # LLM evaluator or, when llm_enabled=False, by the scanner via
+    # select_default_contract. Persisted to candidates.selected_contract_json.
+    selected_contract: OptionContract | None = None
+
     timestamp: datetime
 
 

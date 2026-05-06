@@ -27,7 +27,7 @@ from shared.analytics.options.full_options_analysis import FullOptionsAnalysis
 from shared.analytics.regime import RegimeState
 from shared.analytics.trend import ema as compute_ema
 from shared.analytics.volume import volume_vs_avg
-from shared.schemas.market import Bar
+from shared.schemas.market import Bar, OptionContract
 from shared.strategy.base import (
     ConfidenceLabel,
     EntryCandidate,
@@ -36,6 +36,36 @@ from shared.strategy.base import (
     RuleType,
 )
 from shared.strategy.settings import StrategySettings
+
+
+def select_default_contract(
+    shortlist: list[OptionContract],
+    delta_target_range: tuple[Decimal, Decimal],
+) -> OptionContract | None:
+    """Phase 5 fallback: pick a contract deterministically when LLM is
+    disabled or unavailable.
+
+    Algorithm:
+      1. Filter shortlist to contracts whose abs(delta) is within
+         `delta_target_range`.
+      2. Of those, return the one with the highest open_interest * volume
+         (liquidity score). Ties broken by tighter bid-ask spread.
+      3. If nothing fits the delta band, return None.
+    """
+    low, high = delta_target_range
+    in_range = [
+        c for c in shortlist
+        if low <= abs(c.delta) <= high
+    ]
+    if not in_range:
+        return None
+    return max(
+        in_range,
+        key=lambda c: (
+            int(c.open_interest) * int(c.volume),
+            -float(c.ask - c.bid),
+        ),
+    )
 
 
 def _to_decimal(value: Any) -> Decimal:

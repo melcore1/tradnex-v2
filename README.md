@@ -385,6 +385,61 @@ new orchestrator states (`processing_vetoes`, `pending_llm_evaluation`,
 `rejected_by_llm`, `rejected_by_user`); the recreation runs inside
 `PRAGMA foreign_keys = OFF` so existing FK references survive intact.
 
+## Claude evaluator (Phase 5)
+
+The evaluator is the LLM judgment layer between the orchestrator
+(Phase 4) and human approval. Candidates that pass hard vetoes land in
+`pending_llm_evaluation` — the evaluator picks them up, pre-fetches Exa
+news context, renders a versioned prompt, calls `claude -p` as a
+subprocess, validates the JSON response against a stored JSON-Schema,
+persists a full evaluation row (`llm_evaluations`), and transitions the
+candidate to one of:
+
+| Kind  | Decision                | New status               |
+|-------|-------------------------|--------------------------|
+| Entry | STRONG / MODERATE / WEAK | `pending_human_approval` |
+| Entry | VETO                    | `rejected_by_llm`        |
+| Exit  | CLOSE / CLOSE_PARTIAL   | `pending_human_approval` |
+| Exit  | HOLD                    | `held`                   |
+
+Routing is fired immediately by the orchestrator
+(`asyncio.create_task(safe_evaluator_call(...))`) and a 5-min poller
+catches stragglers. Workers race-safely — the queue claims a candidate
+via an atomic `UPDATE … WHERE status='pending_llm_evaluation'` checking
+`rowcount==1`. Bootstrap on restart resets stranded
+`processing_llm_evaluation` rows back to pending and re-enqueues
+everything.
+
+**Exa is pre-fetch only** — top 3 articles (last 7 days) are embedded in
+the prompt JSON before Claude runs. No live MCP tool access.
+
+**LLM bypass switch** (`StrategySettings.evaluator.llm_enabled = False`)
+skips Claude entirely: the scanner pre-picks a contract via
+`select_default_contract` and the evaluator runs a rule-based fallback
+(`fallback_used=true`). Same end-state for the candidate
+(`pending_human_approval` / `held`); no Claude call billed.
+
+**Prompt versioning** is in-DB (`prompt_versions` table, partial UNIQUE
+index ensures ≤1 active per template). Migration `0008_seed_prompts.sql`
+seeds v1 entry + exit. CLI:
+
+```bash
+python -m services.evaluator.cli prompt show entry_evaluation
+python -m services.evaluator.cli prompt history entry_evaluation
+python -m services.evaluator.cli prompt activate <version_id>
+python -m services.evaluator.cli prompt rollback entry_evaluation 1
+python -m services.evaluator.cli evaluate <candidate_id>
+python -m services.evaluator.cli queue
+python -m services.evaluator.cli evaluations --hours 24
+python -m services.evaluator.cli health
+```
+
+`migrations/0008_evaluator.sql` widens `candidates.status` with
+`processing_llm_evaluation` and `held`, adds `selected_contract_json`
+column, and creates `prompt_versions` + `llm_evaluations`. Both LLM and
+rule-fallback writes go to `selected_contract_json` for the future
+executor to read.
+
 ## Phase status
 
 - **Phase 0 — foundation + CI**: complete
@@ -396,7 +451,7 @@ new orchestrator states (`processing_vetoes`, `pending_llm_evaluation`,
 - **Phase 3 — scanner + 6-rule long options momentum strategy**: complete
 - **Phase 3.5 — exit engine + monitor + position lifecycle**: complete
 - **Phase 4 — orchestrator + hard vetoes + calendar service**: complete
-- Phase 5 — Claude evaluator (with Exa news): not started
+- **Phase 5 — Claude evaluator (with Exa news + prompt versioning)**: complete
 - Phase 6 — FastAPI: not started
 - Phase 7 — Next.js dashboard: not started
 - Phase 8 — paper execution: not started

@@ -33,6 +33,36 @@ class MarketWindow(BaseModel):
     monitor_end: str = "15:55"
 
 
+class EvaluatorSettings(BaseModel):
+    """Phase 5: Claude evaluator + Exa news + queue + LLM bypass switch."""
+
+    model_config = ConfigDict(frozen=True)
+
+    # Subprocess / model
+    claude_model: str = "claude-opus-4-7"
+    claude_timeout_seconds: int = 90
+    claude_max_turns: int = 1
+
+    # Queue + poller
+    max_concurrent_evaluations: int = 3
+    poll_interval_seconds: int = 300
+    poll_age_threshold_seconds: int = 600
+
+    # Exa pre-fetch
+    exa_news_lookback_days: int = 7
+    exa_news_max_articles: int = 3
+
+    # LLM bypass switch — when False, scanner picks contract via
+    # select_default_contract and the evaluator runs the rule-based
+    # fallback (no Claude call).
+    llm_enabled: bool = True
+
+    # Guardrails
+    prompt_token_budget: int = 60_000  # rough char/4 budget
+    delta_target_range_low: Decimal = Decimal("0.30")
+    delta_target_range_high: Decimal = Decimal("0.70")
+
+
 class StrategySettings(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -54,3 +84,4 @@ class StrategySettings(BaseModel):
 
     shortlist_params: ShortlistParams = Field(default_factory=ShortlistParams)
     market_window: MarketWindow = Field(default_factory=MarketWindow)
+    evaluator: EvaluatorSettings = Field(default_factory=EvaluatorSettings)

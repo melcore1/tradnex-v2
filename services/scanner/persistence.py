@@ -31,6 +31,11 @@ async def persist_candidate(
         options_payload = None
     else:
         options_payload = candidate.options_analysis.model_dump_json()
+    selected_contract_payload: str | None
+    if candidate.selected_contract is None:
+        selected_contract_payload = None
+    else:
+        selected_contract_payload = candidate.selected_contract.model_dump_json()
 
     cur = conn.execute(
         "INSERT INTO candidates ("
@@ -38,9 +43,9 @@ async def persist_candidate(
         "indicators_json, veto_trace_json, llm_decision_json, "
         "candidate_kind, strategy_name, rule_trace_json, regime_snapshot_json, "
         "overrides_applied_json, shortlist_json, full_analysis_json, "
-        "options_analysis_json, position_id"
+        "options_analysis_json, position_id, selected_contract_json"
         ") VALUES (?, ?, 'pending', ?, ?, '{}', '{}', '{}', "
-        "?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        "?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
         (
             candidate.ticker,
             candidate.direction,
@@ -54,6 +59,7 @@ async def persist_candidate(
             shortlist_payload,
             candidate.full_analysis.model_dump_json(),
             options_payload,
+            selected_contract_payload,
         ),
     )
     conn.commit()

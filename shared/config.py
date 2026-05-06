@@ -27,5 +27,10 @@ class Settings(BaseSettings):
     NTFY_TOPIC: str | None = None
     API_BEARER_TOKEN: str | None = None
 
+    CLAUDE_CLIENT: Literal["mock", "cli"] = "mock"
+    CLAUDE_MODEL: str = "claude-opus-4-7"
+    CLAUDE_TIMEOUT_SECONDS: int = 90
+    CLAUDE_CLI_PATH: str = "claude"
+
 
 settings = Settings()  # type: ignore[call-arg]

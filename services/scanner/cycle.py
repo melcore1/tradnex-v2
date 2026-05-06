@@ -130,7 +130,8 @@ async def evaluate_ticker(
     )
 
     if candidate is not None:
-        params = getattr(getattr(strategy, "settings", None), "shortlist_params", None)
+        strat_settings = getattr(strategy, "settings", None)
+        params = getattr(strat_settings, "shortlist_params", None)
         candidate.shortlist = build_shortlist(
             chain,
             direction=candidate.direction,
@@ -148,6 +149,29 @@ async def evaluate_ticker(
                 "shortlist_empty_insufficient_dte_diversity"
             )
             candidate = None
+        else:
+            # Phase 5: when the LLM bypass is on, the scanner pre-picks the
+            # contract deterministically here — no Claude call later. The
+            # evaluator's fallback path will still run and persist a row
+            # (with fallback_reason='llm_disabled') for full audit.
+            evaluator_cfg = getattr(strat_settings, "evaluator", None)
+            if (
+                evaluator_cfg is not None
+                and not evaluator_cfg.llm_enabled
+            ):
+                from shared.strategy.long_options_momentum import (
+                    select_default_contract,
+                )
+
+                pick = select_default_contract(
+                    candidate.shortlist,
+                    (
+                        evaluator_cfg.delta_target_range_low,
+                        evaluator_cfg.delta_target_range_high,
+                    ),
+                )
+                if pick is not None:
+                    candidate.selected_contract = pick
 
     # Persist
     from services.scanner.persistence import persist_candidate, persist_evaluation
