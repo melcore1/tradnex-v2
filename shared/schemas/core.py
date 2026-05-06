@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -67,3 +68,21 @@ class StrategyConfig(BaseModel):
     is_active: bool
     created_ts: float
     updated_ts: float
+
+
+class Position(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int | None = None
+    candidate_id: int | None = None
+    ticker: str
+    contract_symbol: str
+    side: Literal["long", "short"]
+    quantity: int
+    entry_price: Decimal
+    entry_ts: float
+    exit_price: Decimal | None = None
+    exit_ts: float | None = None
+    exit_reason: str | None = None
+    pnl: Decimal | None = None
+    status: Literal["open", "closed"]

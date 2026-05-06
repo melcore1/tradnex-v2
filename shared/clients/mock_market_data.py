@@ -174,6 +174,7 @@ class MockDataClient(MarketDataClient):
         self._injected_quotes: dict[str, Quote] = {}
         self._market_open_override: bool | None = None
         self._call_count: dict[str, int] = {}
+        self._iv_history_seeded: bool = False
 
     def reset(self) -> None:
         """Restore deterministic seed state. Call between test cases."""
@@ -189,6 +190,64 @@ class MockDataClient(MarketDataClient):
     def inject_quote(self, ticker: str, quote: Quote) -> None:
         """Override the next get_quote response for `ticker`."""
         self._injected_quotes[ticker] = quote
+
+    def seed_iv_history(self, *, days: int = 252) -> int:
+        """Populate daily_iv_snapshots with synthetic AR(1) IV history.
+
+        Idempotent and lazy: returns 0 immediately if rows already exist for
+        this client's tickers. Returns the number of rows inserted otherwise.
+        Tests, CLI, and the data service all call this before iv_rank queries.
+        """
+        if self._iv_history_seeded:
+            return 0
+
+        from shared.db import get_connection
+
+        conn = get_connection()
+        try:
+            existing = conn.execute(
+                "SELECT COUNT(*) FROM daily_iv_snapshots WHERE ticker IN "
+                f"({','.join('?' * len(self._baselines))})",
+                tuple(self._baselines.keys()),
+            ).fetchone()[0]
+            if existing > 0:
+                self._iv_history_seeded = True
+                return 0
+
+            rng = np.random.default_rng(self._seed + 7919)  # offset so seeding is independent
+            today = datetime.now(UTC).date()
+            rows: list[tuple[str, str, float, float, float, float, float]] = []
+            for ticker in self._baselines:
+                mean_iv = 0.22 if ticker in {"SPY", "QQQ"} else 0.38
+                iv_t = mean_iv
+                for offset in range(days, 0, -1):
+                    d = today - timedelta(days=offset)
+                    iv_t = 0.95 * iv_t + 0.05 * mean_iv + float(rng.normal(0.0, 0.012))
+                    iv_t = max(iv_t, 0.05)
+                    if rng.uniform() < 0.02:
+                        iv_t = iv_t * float(rng.uniform(1.5, 2.0))
+                    rows.append(
+                        (
+                            ticker,
+                            d.isoformat(),
+                            round(iv_t, 6),
+                            round(iv_t * 0.97, 6),
+                            round(iv_t * 0.94, 6),
+                            round(iv_t, 6),
+                            datetime.now(UTC).timestamp(),
+                        )
+                    )
+            conn.executemany(
+                "INSERT OR IGNORE INTO daily_iv_snapshots "
+                "(ticker, date, iv_30d, iv_60d, iv_90d, atm_iv, recorded_ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            conn.commit()
+            self._iv_history_seeded = True
+            return len(rows)
+        finally:
+            conn.close()
 
     def _baseline(self, ticker: str) -> Decimal:
         return self._baselines.get(ticker, DEFAULT_BASELINE)

@@ -3,6 +3,7 @@ from shared.schemas.core import (
     CandidateStatus,
     Event,
     LogLevel,
+    Position,
     StrategyConfig,
     Watchlist,
 )
@@ -29,6 +30,7 @@ __all__ = [
     "Movers",
     "OptionContract",
     "OptionsChain",
+    "Position",
     "Quote",
     "StrategyConfig",
     "Watchlist",

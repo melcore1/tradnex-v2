@@ -125,12 +125,45 @@ Sanity-check from the CLI:
 
 Add `--json` for raw output suitable for piping to `jq`.
 
+## Options analytics (Tier 3)
+
+`shared/analytics/options/` consumes an `OptionsChain` and produces every
+options-derived signal the scanner / evaluator / dashboard needs:
+
+- `gex.py` — GEX per-strike and per-expiration (SpotGamma sign convention:
+  calls +, puts −), call / put walls, gamma flip, dealer-position regime.
+- `iv.py` — IV rank, IV percentile, 25Δ skew, ATM term structure, volatility
+  risk premium (VRP = IV − GARCH-realized).
+- `pain.py` — Max pain by expiration, P/C OI and volume ratios.
+- `flow.py` — ATM-straddle expected move, unusual-activity heuristic
+  (volume/OI flagging), net premium flow direction.
+- `zero_dte.py` — pin risk, expected move, gamma concentration, key strikes
+  for today's expiry. Returns `None` if today isn't an expiration day.
+- `greeks_aggregation.py` — second-order Greeks (vanna, charm, vomma, speed)
+  via closed-form Black-Scholes; net chain Greeks weighted by OI; portfolio
+  Greeks across open positions with concentration warnings.
+- `full_options_analysis.py` — `compute_options_analysis(chain, conn, garch)`
+  aggregator. Sequential — pure CPU.
+
+CLI demos:
+
+    python -m services.data.cli analyze-options NVDA
+    python -m services.data.cli iv-rank NVDA --lookback 252
+    python -m services.data.cli gex NVDA
+    python -m services.data.cli snapshot-iv NVDA SPY AAPL
+
+`MockDataClient.seed_iv_history()` populates 252 days of synthetic ATM IV into
+`daily_iv_snapshots` so `iv_rank` works in dev immediately. Production runs
+populate the same table via `services/data/iv_snapshot_task.py` (~15:55 ET
+daily for the static universe).
+
 ## Phase status
 
 - **Phase 0 — foundation + CI**: complete
 - **Phase 1a — data interfaces, mock, Schwab client**: complete (Schwab dormant until API approval)
 - **Phase 1b — Tier 2 analytics**: complete
-- Phase 1c — Tier 3 options analytics (GEX, IVRank, etc.): not started
+- **Phase 1c — Tier 3 options analytics**: complete
+- Phase 1d — Tier 4 (regime, correlation, portfolio aggregation, halt status): not started
 - Phase 2 — scanner + strategy rules: not started
 - Phase 3 — hard vetoes: not started
 - Phase 4 — Claude evaluator: not started

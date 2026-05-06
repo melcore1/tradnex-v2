@@ -9,6 +9,10 @@ Examples:
     python -m services.data.cli movers
     python -m services.data.cli status
     python -m services.data.cli analyze NVDA --timeframe 1d --bars 200
+    python -m services.data.cli analyze-options NVDA
+    python -m services.data.cli iv-rank NVDA
+    python -m services.data.cli gex NVDA
+    python -m services.data.cli snapshot-iv NVDA
 
 Add --json to any command for raw JSON output.
 """
@@ -21,10 +25,17 @@ import json
 from decimal import Decimal
 from typing import Any
 
-from shared.analytics import compute_full_analysis
+from shared.analytics import (
+    compute_full_analysis,
+    compute_options_analysis,
+    gex_per_strike,
+    iv_rank,
+)
 from shared.clients.factory import make_market_data_client
 from shared.clients.market_data import MarketDataClient
+from shared.clients.mock_market_data import MockDataClient
 from shared.config import settings
+from shared.db import get_connection, run_migrations
 
 
 def _serialize(obj: Any) -> Any:
@@ -275,6 +286,183 @@ async def _cmd_analyze(client: MarketDataClient, args: argparse.Namespace) -> No
         print("  VWAP:          n/a (daily timeframe)")
 
 
+def _ensure_mock_iv_seed(client: MarketDataClient) -> None:
+    if isinstance(client, MockDataClient):
+        run_migrations()
+        client.seed_iv_history()
+
+
+async def _cmd_analyze_options(client: MarketDataClient, args: argparse.Namespace) -> None:
+    _ensure_mock_iv_seed(client)
+    chain = await client.get_options_chain(args.ticker)
+    bars = await client.get_bars(args.ticker, timeframe="1d", limit=300)
+    fa = await compute_full_analysis(args.ticker, bars, timeframe="1d")
+    conn = get_connection()
+    try:
+        oa = compute_options_analysis(chain, conn, garch_result=fa.garch)
+    finally:
+        conn.close()
+    if args.json:
+        _print_json(oa)
+        return
+    rule = "─" * 60
+    print(f"Options Analysis — {oa.ticker}")
+    print(rule)
+    print(f"Spot: ${oa.spot}")
+    print(f"Summary: {oa.summary}")
+    print()
+
+    print("GEX:")
+    print(
+        f"  net GEX:       {oa.gex.net_gex} ({oa.gex.regime}, {oa.gex.dealer_position})"
+    )
+    print(f"  call wall:     {oa.gex.call_wall}")
+    print(f"  put wall:      {oa.gex.put_wall}")
+    print(f"  gamma flip:    {oa.gex.gamma_flip}")
+    print()
+
+    print("IV:")
+    print(
+        f"  IV rank:       {oa.iv_rank.rank} ({oa.iv_rank.regime}, "
+        f"{oa.iv_rank.data_points} pts over {oa.iv_rank.lookback_days}d)"
+    )
+    print(
+        f"  IV percentile: {oa.iv_percentile.percentile}"
+    )
+    if oa.skew is not None:
+        print(
+            f"  skew:          put25Δ {oa.skew.put_25d_iv} / call25Δ {oa.skew.call_25d_iv}  "
+            f"= {oa.skew.skew} ({oa.skew.regime})"
+        )
+    if oa.term_structure is not None:
+        print(
+            f"  term:          front {oa.term_structure.front_month_iv} / "
+            f"back {oa.term_structure.back_month_iv}  slope {oa.term_structure.slope} "
+            f"({oa.term_structure.regime})"
+        )
+    if oa.vrp is not None:
+        print(
+            f"  VRP:           IV30 {oa.vrp.atm_iv_30d} - realized "
+            f"{oa.vrp.realized_vol_forecast} = {oa.vrp.vrp} ({oa.vrp.regime})"
+        )
+    print()
+
+    print("Pain & flow:")
+    print(
+        f"  P/C OI ratio:  {oa.pc_ratio.oi_pc_ratio:.3f} ({oa.pc_ratio.regime_oi})"
+    )
+    print(
+        f"  P/C vol ratio: {oa.pc_ratio.volume_pc_ratio:.3f} ({oa.pc_ratio.regime_volume})"
+    )
+    if oa.max_pain_per_expiration:
+        first_exp, mp = next(iter(oa.max_pain_per_expiration.items()))
+        print(
+            f"  max pain ({first_exp}): {mp.max_pain_strike}  "
+            f"distance {mp.distance_pct}%  ({mp.regime})"
+        )
+    if oa.expected_move_per_expiration:
+        for exp, em in list(oa.expected_move_per_expiration.items())[:3]:
+            print(
+                f"  expected move ({exp}, {em.dte}d): ±${em.expected_move_dollars} "
+                f"(±{em.expected_move_pct}%)"
+            )
+    print(
+        f"  net premium:   call ${oa.net_premium_flow.total_call_premium} - "
+        f"put ${oa.net_premium_flow.total_put_premium} = "
+        f"{oa.net_premium_flow.net_premium} ({oa.net_premium_flow.direction})"
+    )
+    print(
+        f"  UOA flagged:   {len(oa.unusual_activity.flagged_contracts)} contracts "
+        f"({oa.unusual_activity.net_flow_direction})"
+    )
+    print()
+
+    print("Greeks:")
+    print(
+        f"  ATM 2nd-order: vanna {oa.second_order_greeks_atm.vanna}  "
+        f"charm {oa.second_order_greeks_atm.charm}/day  "
+        f"vomma {oa.second_order_greeks_atm.vomma}  "
+        f"speed {oa.second_order_greeks_atm.speed}"
+    )
+    print(
+        f"  net chain:     Δ {oa.net_chain_greeks.net_chain_delta}  "
+        f"Γ {oa.net_chain_greeks.net_chain_gamma}  "
+        f"vega {oa.net_chain_greeks.net_chain_vega}  "
+        f"θ {oa.net_chain_greeks.net_chain_theta}"
+    )
+    print()
+
+    if oa.zero_dte is not None:
+        print("0DTE:")
+        z = oa.zero_dte
+        print(
+            f"  pin risk:      {z.pin_risk}  "
+            f"(time to expiry {z.time_to_expiry_hours}h)"
+        )
+        print(f"  expected move: ±${z.expected_move} (±{z.expected_move_pct}%)")
+        print(f"  γ concentration: {z.gamma_concentration}%")
+        print(f"  key strikes:   {z.key_strikes}")
+
+
+async def _cmd_iv_rank(client: MarketDataClient, args: argparse.Namespace) -> None:
+    _ensure_mock_iv_seed(client)
+    chain = await client.get_options_chain(args.ticker, max_dte=45)
+    spot = chain.spot_at_fetch
+    atm = min(chain.contracts, key=lambda c: abs(c.strike - spot))
+    conn = get_connection()
+    try:
+        result = iv_rank(args.ticker, atm.iv, conn, lookback_days=args.lookback)
+    finally:
+        conn.close()
+    if args.json:
+        _print_json(result)
+        return
+    print(f"IV rank — {args.ticker}")
+    print(f"  current IV:    {result.current_iv}")
+    print(f"  rank:          {result.rank} ({result.regime})")
+    print(f"  history range: [{result.iv_min_lookback}, {result.iv_max_lookback}]")
+    print(f"  data points:   {result.data_points} over {result.lookback_days}d")
+
+
+async def _cmd_gex(client: MarketDataClient, args: argparse.Namespace) -> None:
+    chain = await client.get_options_chain(args.ticker)
+    result = gex_per_strike(chain)
+    if args.json:
+        _print_json(result)
+        return
+    print(f"GEX — {result.underlying}  spot {result.spot}")
+    print(f"  net GEX:        {result.net_gex} ({result.regime}, {result.dealer_position})")
+    print(f"  call wall:      {result.call_wall}")
+    print(f"  put wall:       {result.put_wall}")
+    print(f"  gamma flip:     {result.gamma_flip}")
+    if result.distance_to_call_wall_pct is not None:
+        print(f"  to call wall:   {result.distance_to_call_wall_pct}%")
+    if result.distance_to_put_wall_pct is not None:
+        print(f"  to put wall:    {result.distance_to_put_wall_pct}%")
+    if result.distance_to_flip_pct is not None:
+        print(f"  to flip:        {result.distance_to_flip_pct}%")
+
+
+async def _cmd_snapshot_iv(client: MarketDataClient, args: argparse.Namespace) -> None:
+    from services.data.iv_snapshot_task import snapshot_iv_for_ticker
+
+    run_migrations()
+    if args.tickers:
+        tickers = args.tickers
+    else:
+        tickers = ["NVDA", "SPY", "AAPL"]
+    results = []
+    for t in tickers:
+        ok = await snapshot_iv_for_ticker(t, client)
+        results.append((t, ok))
+    if args.json:
+        _print_json([{"ticker": t, "written": ok} for t, ok in results])
+        return
+    print(f"IV snapshot ({settings.DATA_CLIENT})")
+    for t, ok in results:
+        print(f"  {t}: {'written' if ok else 'skipped'}")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="services.data.cli",
@@ -309,6 +497,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeframe", default="1d", choices=["1m", "5m", "15m", "1h", "1d"])
     p.add_argument("--bars", type=int, default=300)
 
+    p = sub.add_parser("analyze-options", help="Full Tier 3 options analytics")
+    p.add_argument("ticker")
+
+    p = sub.add_parser("iv-rank", help="IV rank for a ticker")
+    p.add_argument("ticker")
+    p.add_argument("--lookback", type=int, default=252)
+
+    p = sub.add_parser("gex", help="GEX, walls, gamma flip")
+    p.add_argument("ticker")
+
+    p = sub.add_parser("snapshot-iv", help="Run IV snapshot once (writes to DB)")
+    p.add_argument("tickers", nargs="*")
+
     return parser
 
 
@@ -321,6 +522,10 @@ _HANDLERS = {
     "movers": _cmd_movers,
     "status": _cmd_status,
     "analyze": _cmd_analyze,
+    "analyze-options": _cmd_analyze_options,
+    "iv-rank": _cmd_iv_rank,
+    "gex": _cmd_gex,
+    "snapshot-iv": _cmd_snapshot_iv,
 }
 
 

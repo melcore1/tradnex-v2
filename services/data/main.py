@@ -15,6 +15,14 @@ async def _bootstrap() -> bool:
     if applied:
         emit(SERVICE_NAME, "info", "migrations_applied", {"files": applied})
     client = make_market_data_client(settings)
+    # In dev with the mock client, lazy-seed 252 days of IV history so iv_rank works.
+    if settings.DATA_CLIENT == "mock":
+        from shared.clients.mock_market_data import MockDataClient
+
+        if isinstance(client, MockDataClient):
+            seeded = client.seed_iv_history()
+            if seeded:
+                emit(SERVICE_NAME, "info", "mock_iv_history_seeded", {"rows": seeded})
     healthy = await client.health_check()
     emit(
         SERVICE_NAME,
