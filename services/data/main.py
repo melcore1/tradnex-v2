@@ -28,6 +28,22 @@ async def _bootstrap() -> tuple[bool, AsyncIOScheduler | None]:
             if seeded:
                 emit(SERVICE_NAME, "info", "mock_iv_history_seeded", {"rows": seeded})
 
+    # Watchlist <-> universe drift check
+    from shared.services.watchlist import validate_watchlist_universe_sync
+
+    sync_conn = get_connection()
+    try:
+        drift = await validate_watchlist_universe_sync(sync_conn)
+        if drift:
+            emit(
+                SERVICE_NAME,
+                "warn",
+                "watchlist_universe_drift",
+                {"drift_tickers": drift},
+            )
+    finally:
+        sync_conn.close()
+
     healthy = await client.health_check()
     if not healthy:
         return False, None

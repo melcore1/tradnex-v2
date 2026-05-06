@@ -188,6 +188,39 @@ CLI extensions:
     python -m services.data.cli compute-correlations
     python -m services.data.cli portfolio-greeks
 
+## Watchlist management (Phase 2)
+
+The system separates **universe** (set of allowed tickers) from **watchlist**
+(today's targeted subset, with optional per-ticker overrides). Universe lives
+in `strategy_configs.settings_json["universe"]` and is the source of truth —
+every watchlist ticker must be in the universe.
+
+Daily watchlist auto-carries forward from the most recent prior day if today
+hasn't been set yet (`created_by="auto_carry_forward"`). Per-ticker overrides
+are NOT carried — they're tactical and reset daily.
+
+CLI:
+
+    python -m services.data.cli universe list
+    python -m services.data.cli universe add MSCI
+    python -m services.data.cli universe remove NFLX
+
+    python -m services.data.cli watchlist show
+    python -m services.data.cli watchlist set NVDA AMD SPY
+    python -m services.data.cli watchlist add MSFT
+    python -m services.data.cli watchlist remove SPY
+    python -m services.data.cli watchlist history --days 7
+    python -m services.data.cli watchlist override NVDA \
+        --rsi-min 60 --min-dte 3 --set bias=long
+
+The override command takes convenience flags (`--rsi-min`, `--rsi-max`,
+`--min-dte`, `--max-dte`, `--notes`) plus repeatable `--set KEY=VALUE` for
+arbitrary strategy-rule overrides. Numeric values auto-coerced.
+
+The data service performs a watchlist↔universe drift check at startup and
+emits `watchlist_universe_drift` if any active watchlist references a ticker
+no longer in the universe.
+
 ## Phase status
 
 - **Phase 0 — foundation + CI**: complete
@@ -195,7 +228,7 @@ CLI extensions:
 - **Phase 1b — Tier 2 analytics**: complete
 - **Phase 1c — Tier 3 options analytics**: complete
 - **Phase 1d — Tier 4 (regime, gap, halt, correlation, portfolio Greeks)**: complete
-- Phase 2 — watchlist + DB infrastructure: not started
+- **Phase 2 — watchlist + DB infrastructure**: complete
 - Phase 3 — scanner + strategy rules: not started
 - Phase 4 — hard vetoes: not started
 - Phase 5 — Claude evaluator: not started

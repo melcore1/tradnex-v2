@@ -47,6 +47,16 @@ from shared.clients.market_data import MarketDataClient
 from shared.clients.mock_market_data import MockDataClient
 from shared.config import settings
 from shared.db import get_connection, run_migrations
+from shared.services import (
+    add_ticker_to_watchlist,
+    add_to_universe,
+    get_active_watchlist,
+    get_universe,
+    get_watchlist_history,
+    remove_from_universe,
+    remove_ticker_from_watchlist,
+    set_watchlist,
+)
 
 
 def _serialize(obj: Any) -> Any:
@@ -693,6 +703,41 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("portfolio-greeks", help="Greeks across open positions")
 
+    universe_p = sub.add_parser("universe", help="Static universe management")
+    universe_sub = universe_p.add_subparsers(dest="action", required=True)
+    universe_sub.add_parser("list", help="Show universe")
+    a = universe_sub.add_parser("add", help="Add ticker to universe")
+    a.add_argument("ticker")
+    r = universe_sub.add_parser("remove", help="Remove ticker (cascades to watchlists)")
+    r.add_argument("ticker")
+
+    wl_p = sub.add_parser("watchlist", help="Daily watchlist management")
+    wl_sub = wl_p.add_subparsers(dest="action", required=True)
+    wl_sub.add_parser("show", help="Show today's active watchlist")
+    s = wl_sub.add_parser("set", help="Replace today's watchlist")
+    s.add_argument("tickers", nargs="+")
+    s.add_argument("--notes", default=None)
+    a2 = wl_sub.add_parser("add", help="Add a ticker to today's watchlist")
+    a2.add_argument("ticker")
+    r2 = wl_sub.add_parser("remove", help="Remove a ticker from today's watchlist")
+    r2.add_argument("ticker")
+    h = wl_sub.add_parser("history", help="Recent watchlist history")
+    h.add_argument("--days", type=int, default=7)
+    o = wl_sub.add_parser("override", help="Set per-ticker override on today's watchlist")
+    o.add_argument("ticker")
+    o.add_argument("--rsi-min", type=float, default=None)
+    o.add_argument("--rsi-max", type=float, default=None)
+    o.add_argument("--min-dte", type=int, default=None)
+    o.add_argument("--max-dte", type=int, default=None)
+    o.add_argument("--notes", default=None)
+    o.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Generic override (repeatable)",
+    )
+
     return parser
 
 
@@ -716,7 +761,136 @@ _HANDLERS = {
     "correlation-matrix": _cmd_correlation_matrix,
     "compute-correlations": _cmd_compute_correlations,
     "portfolio-greeks": _cmd_portfolio_greeks,
+    "universe": "DISPATCH",  # handled separately based on action
+    "watchlist": "DISPATCH",
 }
+
+
+async def _cmd_universe(_client: MarketDataClient, args: argparse.Namespace) -> None:
+    conn = get_connection()
+    try:
+        if args.action == "list":
+            universe = await get_universe(conn)
+            if args.json:
+                _print_json({"universe": universe})
+                return
+            print(f"Universe ({len(universe)} tickers)")
+            for t in universe:
+                print(f"  {t}")
+        elif args.action == "add":
+            updated = await add_to_universe(conn, args.ticker)
+            if args.json:
+                _print_json({"action": "added", "ticker": args.ticker.upper(), "universe": updated})
+                return
+            print(f"Added {args.ticker.upper()} → universe now has {len(updated)} tickers")
+        elif args.action == "remove":
+            updated = await remove_from_universe(conn, args.ticker)
+            if args.json:
+                _print_json(
+                    {"action": "removed", "ticker": args.ticker.upper(), "universe": updated}
+                )
+                return
+            print(f"Removed {args.ticker.upper()} → universe now has {len(updated)} tickers")
+    finally:
+        conn.close()
+
+
+def _parse_set_overrides(set_args: list[str]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for raw in set_args:
+        if "=" not in raw:
+            raise SystemExit(f"--set expects KEY=VALUE, got {raw!r}")
+        key, _, value = raw.partition("=")
+        # Try to coerce numeric values automatically
+        coerced: Any = value
+        try:
+            coerced = int(value)
+        except ValueError:
+            try:
+                coerced = float(value)
+            except ValueError:
+                pass
+        out[key.strip()] = coerced
+    return out
+
+
+async def _cmd_watchlist(_client: MarketDataClient, args: argparse.Namespace) -> None:
+    conn = get_connection()
+    try:
+        if args.action == "show":
+            entry = await get_active_watchlist(conn)
+            if args.json:
+                _print_json(entry)
+                return
+            print(f"Watchlist {entry.date}  ({entry.created_by})")
+            if entry.notes:
+                print(f"  notes: {entry.notes}")
+            for t in entry.tickers:
+                overrides = entry.per_ticker_overrides.get(t)
+                if overrides:
+                    print(f"  {t}  overrides={overrides}")
+                else:
+                    print(f"  {t}")
+            if not entry.tickers:
+                print("  (empty)")
+        elif args.action == "set":
+            entry = await set_watchlist(conn, args.tickers, notes=args.notes)
+            if args.json:
+                _print_json(entry)
+                return
+            print(f"Watchlist set for {entry.date}: {entry.tickers}")
+        elif args.action == "add":
+            entry = await add_ticker_to_watchlist(conn, args.ticker)
+            if args.json:
+                _print_json(entry)
+                return
+            print(f"Added {args.ticker.upper()} to {entry.date}: now {entry.tickers}")
+        elif args.action == "remove":
+            entry = await remove_ticker_from_watchlist(conn, args.ticker)
+            if args.json:
+                _print_json(entry)
+                return
+            print(f"Removed {args.ticker.upper()} from {entry.date}: now {entry.tickers}")
+        elif args.action == "history":
+            history = await get_watchlist_history(conn, days=args.days)
+            if args.json:
+                _print_json(history)
+                return
+            print(f"Watchlist history (last {args.days} days)")
+            for e in history:
+                print(f"  {e.date}  {e.created_by:<22}  {len(e.tickers)} tickers  {e.tickers}")
+        elif args.action == "override":
+            overrides: dict[str, Any] = {}
+            if args.rsi_min is not None:
+                overrides["rsi_min"] = args.rsi_min
+            if args.rsi_max is not None:
+                overrides["rsi_max"] = args.rsi_max
+            if args.min_dte is not None:
+                overrides["min_dte"] = args.min_dte
+            if args.max_dte is not None:
+                overrides["max_dte"] = args.max_dte
+            if args.notes is not None:
+                overrides["notes"] = args.notes
+            overrides.update(_parse_set_overrides(args.set))
+            if not overrides:
+                raise SystemExit(
+                    "No overrides given. Use --rsi-min, --rsi-max, --min-dte, --max-dte, "
+                    "--notes, or --set KEY=VALUE."
+                )
+            entry = await add_ticker_to_watchlist(conn, args.ticker, overrides=overrides)
+            if args.json:
+                _print_json(entry)
+                return
+            print(
+                f"Set overrides for {args.ticker.upper()} on {entry.date}: "
+                f"{entry.per_ticker_overrides[args.ticker.upper()]}"
+            )
+    finally:
+        conn.close()
+
+
+_HANDLERS["universe"] = _cmd_universe  # type: ignore[assignment]
+_HANDLERS["watchlist"] = _cmd_watchlist  # type: ignore[assignment]
 
 
 async def _run(args: argparse.Namespace) -> None:
