@@ -221,6 +221,58 @@ The data service performs a watchlist↔universe drift check at startup and
 emits `watchlist_universe_drift` if any active watchlist references a ticker
 no longer in the universe.
 
+## Scanner + strategy (Phase 3)
+
+`shared/strategy/` defines the entry decision logic. The headline strategy is
+**Long Options Momentum** — three hard rules (must all pass) plus three soft
+rules (scored 0/1/2 each, summing to 0–6) that map to a confidence label and
+position-sizing multiplier:
+
+| Rule | Source | Threshold |
+|------|--------|-----------|
+| H1 above-200-SMA on daily | `full_analysis.above_200_sma` | strict |
+| H2 EMA9 > EMA21 on 5-min | `ema(bars_5m, 9/21)` | strict |
+| H3 MACD bullish divergence on 5-min | `macd(bars_5m).bullish_divergence_at_pullback_low` | strict |
+| S1 volume confirmation | `volume_vs_avg(bars_daily, 30)` | base 1.2x, bonus 2.0x |
+| S2 RSI rising | `full_analysis.rsi.trend` + `.latest` | base rising, bonus 50–65 sweet spot |
+| S3 ADX strength | `full_analysis.adx` | base ADX>20, bonus ADX>25 + +DI>−DI |
+
+Soft score → confidence:
+
+- **5–6** → STRONG (1.0× max premium)
+- **3–4** → MODERATE (0.66×)
+- **1–2** → WEAK (0.4×)
+- **0** → no candidate (insufficient supplemental confirmation)
+
+A fired candidate gets a DTE-bucketed shortlist (3–6 / 7–10 / 11–14 days)
+filtered by delta in [0.25, 0.35] and OI×volume ≥ 1000, requiring at least 2
+buckets populated for diversity. Empty shortlist → candidate downgraded to
+evaluation-only with `fire_decision_reason='shortlist_empty_insufficient_dte_diversity'`.
+
+The `scanner` service runs an `AsyncIOScheduler` cron — every 10 minutes during
+09:45–15:00 ET on weekdays, skipping US holidays via
+`shared.util.dates.is_trading_day`. Each cycle iterates the active watchlist,
+applies per-ticker overrides, and persists every evaluation (fired or not) to
+the `scanner_evaluations` table for observability. Fired candidates also
+append to the `candidates` table (extended in migration 0005 with new
+`*_json` columns + `candidate_kind` for Phase 3.5).
+
+CLI:
+
+    python -m services.scanner.cli scan-now
+    python -m services.scanner.cli scan-ticker NVDA
+    python -m services.scanner.cli evaluations --hours 24
+    python -m services.scanner.cli evaluations --ticker NVDA --hours 24
+    python -m services.scanner.cli candidates --status pending
+    python -m services.scanner.cli candidate <id>
+
+Per-ticker overrides flow through the existing watchlist override CLI; e.g.
+
+    python -m services.data.cli watchlist override NVDA --set volume_mult_min=1.5
+
+makes S1 require 1.5× average volume (instead of 1.2×) for NVDA today only.
+The override appears in `RuleResult.details.base_threshold` of the trace.
+
 ## Phase status
 
 - **Phase 0 — foundation + CI**: complete
@@ -229,7 +281,8 @@ no longer in the universe.
 - **Phase 1c — Tier 3 options analytics**: complete
 - **Phase 1d — Tier 4 (regime, gap, halt, correlation, portfolio Greeks)**: complete
 - **Phase 2 — watchlist + DB infrastructure**: complete
-- Phase 3 — scanner + strategy rules: not started
+- **Phase 3 — scanner + 6-rule long options momentum strategy**: complete
+- Phase 3.5 — exit engine: not started
 - Phase 4 — hard vetoes: not started
 - Phase 5 — Claude evaluator: not started
 - Phase 6 — FastAPI: not started
