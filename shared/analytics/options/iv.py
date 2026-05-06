@@ -188,6 +188,10 @@ def skew(chain: OptionsChain, expiration: date | None = None) -> SkewResult:
 
     skew_value = put_25d.iv - call_25d.iv
 
+    # TODO: Calibrate regime thresholds (extreme_put_skew threshold
+    # currently > 0.05) against real SPY skew over 4 weeks of data.
+    # Mock data shows 0.063 = extreme; real markets may have higher
+    # baseline.
     if skew_value > Decimal("0.05"):
         regime: SkewRegime = "extreme_put_skew"
     elif skew_value > Decimal("0.01"):

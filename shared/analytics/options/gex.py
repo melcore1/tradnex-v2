@@ -62,6 +62,10 @@ def gex_per_strike(
     chain: OptionsChain,
     expiration: date | None = None,
 ) -> GEXResult:
+    # TODO: Validate against published SpotGamma SPY levels once
+    # Schwab data flows. Goal: our net GEX should match within ~5%.
+    # If signs are flipped or magnitudes off, revisit the sign
+    # convention or the formula coefficient.
     if not chain.contracts:
         raise InsufficientChainError("Chain has no contracts")
 
