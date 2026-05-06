@@ -46,9 +46,9 @@ services:
     depends_on:
       - data
 
-  tripwire:
+  monitor:
     <<: *python-base
-    container_name: tradnex_tripwire
-    command: python -m services.tripwire.main
+    container_name: tradnex_monitor
+    command: python -m services.monitor.main
     depends_on:
       - data

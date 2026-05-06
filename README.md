@@ -273,6 +273,63 @@ Per-ticker overrides flow through the existing watchlist override CLI; e.g.
 makes S1 require 1.5× average volume (instead of 1.2×) for NVDA today only.
 The override appears in `RuleResult.details.base_threshold` of the trace.
 
+## Exit engine (Phase 3.5)
+
+`shared/strategy/exit_signals/` is a 15-signal observation layer that watches
+each open position and reports state. Signals are pure functions: position +
+market state in, `ExitSignal` out (with category, severity, triggered flag,
+description, details). They never decide — they describe.
+
+Categories and severities:
+
+| Category | Signals |
+|----------|---------|
+| pnl | take_profit, stop_loss, trailing_stop |
+| greek | delta_too_high, delta_too_low, theta_acceleration, vega_exposure, charm_acceleration |
+| volatility | iv_crush, iv_spike |
+| time | dte_critical, friday_short_dte |
+| underlying | underlying_halted, adverse_gap |
+| setup_invalidated | setup_invalidated (re-evaluates the 6 entry rules) |
+
+Severity ladder: `INFO < WARNING < URGENT < AUTO_CLOSE`. The
+`evaluate_position_for_exit()` aggregator runs all signals into one
+`ExitSignalTrace` and computes routing flags:
+
+- **AUTO_CLOSE triggered** (P&L > +50% or < −40%) → exit candidate emitted
+  with `is_auto_close=True`. Bypasses Claude evaluation but still requires
+  human approval.
+- **`needs_claude=True`** (any URGENT or WARNING fired, no AUTO_CLOSE) → exit
+  candidate emitted with `needs_claude=True`. Routes through Claude in
+  Phase 4.
+- **No alerts** → only the per-cycle `monitor_evaluations` row is written;
+  no candidate, no Claude.
+
+The `monitor` service runs an `AsyncIOScheduler` cron — every 5 minutes
+during 09:30–15:55 ET on weekdays. It's the architectural mirror of the
+scanner. `services/tripwire/` was retired in this phase; the 5-min monitor
+cadence subsumes the tripwire concept.
+
+Position lifecycle audit lives in `position_lifecycle_events` (event_type
+∈ opened / monitor_evaluated / signal_fired / auto_close_triggered /
+exit_candidate_created / claude_evaluated / human_approved/rejected /
+closing / closed / close_failed). Append-only; never updated. Note:
+`positions.status` stays simple (`'open'` | `'closed'`) — intermediate
+state lives only in lifecycle events.
+
+CLI:
+
+    python -m services.monitor.cli monitor-now
+    python -m services.monitor.cli evaluate-position <id>
+    python -m services.monitor.cli evaluations [--position <id>] [--hours H]
+    python -m services.monitor.cli lifecycle <id>
+    python -m services.monitor.cli open-positions
+    python -m services.monitor.cli exit-candidates [--status pending]
+
+Configurable thresholds live in `shared/strategy/exit_settings.py`
+(`auto_close_profit_pct`, `tp_zone_pct`, `delta_take_profit`,
+`iv_crush_critical_pct`, `monitor_window_start_et`, `monitor_enabled`,
+etc.). Phase 7 will load them from `strategy_configs.settings_json`.
+
 ## Phase status
 
 - **Phase 0 — foundation + CI**: complete
@@ -282,8 +339,8 @@ The override appears in `RuleResult.details.base_threshold` of the trace.
 - **Phase 1d — Tier 4 (regime, gap, halt, correlation, portfolio Greeks)**: complete
 - **Phase 2 — watchlist + DB infrastructure**: complete
 - **Phase 3 — scanner + 6-rule long options momentum strategy**: complete
-- Phase 3.5 — exit engine: not started
-- Phase 4 — hard vetoes: not started
+- **Phase 3.5 — exit engine + monitor + position lifecycle**: complete
+- Phase 4 — orchestrator + hard vetoes: not started
 - Phase 5 — Claude evaluator: not started
 - Phase 6 — FastAPI: not started
 - Phase 7 — Next.js dashboard: not started

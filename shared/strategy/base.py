@@ -18,6 +18,7 @@ from shared.analytics.full_analysis import FullAnalysis
 from shared.analytics.options.full_options_analysis import FullOptionsAnalysis
 from shared.analytics.regime import RegimeState
 from shared.schemas.market import Bar, OptionContract
+from shared.strategy.exit_signals.base import ExitSignalTrace
 
 
 class RuleType(StrEnum):
@@ -109,7 +110,14 @@ class EntryCandidate(BaseModel):
 
 
 class ExitCandidate(BaseModel):
-    """Candidate for closing a position. Phase 3 stub; Phase 3.5 implements body."""
+    """Candidate for closing an open position.
+
+    Routing flags (`is_auto_close`, `needs_claude`) are mutually exclusive
+    once the exit_evaluator returns. The orchestrator (Phase 4) reads them
+    to decide whether to bypass Claude (`is_auto_close=True`) or send the
+    candidate to LLM evaluation (`needs_claude=True`). Either path ends at
+    human approval before any close order leaves.
+    """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=False)
 
@@ -117,6 +125,20 @@ class ExitCandidate(BaseModel):
     position_id: int
     ticker: str
     exit_signal_type: ExitSignalType
+
+    # Routing
+    is_auto_close: bool = False
+    needs_claude: bool = False
+    auto_close_reason: str | None = None
+    triggered_signals: list[str] = Field(default_factory=list)
+
+    # Full trace
+    signal_trace: ExitSignalTrace
+
+    # Convenience snapshot
+    pnl_pct: Decimal
+    pnl_dollars: Decimal
+    dte_remaining: int
 
     timestamp: datetime
 

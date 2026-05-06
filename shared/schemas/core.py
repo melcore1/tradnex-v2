@@ -86,3 +86,10 @@ class Position(BaseModel):
     exit_reason: str | None = None
     pnl: Decimal | None = None
     status: Literal["open", "closed"]
+    # Extended in migration 0006 — defaults keep prior callers working.
+    entry_candidate_id: int | None = None
+    exit_candidate_id: int | None = None
+    strategy_name: str = "long_options_momentum"
+    entry_iv: Decimal | None = None
+    entry_delta: Decimal | None = None
+    entry_dte: int | None = None

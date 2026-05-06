@@ -1,3 +1,12 @@
+from shared.services.positions import (
+    LifecycleEvent,
+    emit_lifecycle_event,
+    get_open_positions,
+    get_position,
+    get_position_high_water_mark,
+    get_position_lifecycle,
+    update_position_status,
+)
 from shared.services.universe import (
     DEFAULT_UNIVERSE,
     InvalidTickerError,
@@ -21,17 +30,24 @@ from shared.services.watchlist import (
 __all__ = [
     "DEFAULT_UNIVERSE",
     "InvalidTickerError",
+    "LifecycleEvent",
     "TickerNotInUniverseError",
     "WatchlistEntry",
     "add_ticker_to_watchlist",
     "add_to_universe",
+    "emit_lifecycle_event",
     "get_active_watchlist",
+    "get_open_positions",
     "get_per_ticker_overrides",
+    "get_position",
+    "get_position_high_water_mark",
+    "get_position_lifecycle",
     "get_universe",
     "get_watchlist_history",
     "is_in_universe",
     "remove_from_universe",
     "remove_ticker_from_watchlist",
     "set_watchlist",
+    "update_position_status",
     "validate_watchlist_universe_sync",
 ]

@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -60,12 +61,40 @@ def test_rule_trace_json_roundtrip() -> None:
     assert restored.fire_decision_reason == original.fire_decision_reason
 
 
+def _make_signal_trace() -> Any:
+    from shared.strategy.exit_signals.base import ExitSignalTrace
+
+    return ExitSignalTrace(
+        position_id=42,
+        timestamp=datetime.now(UTC),
+        ticker="NVDA",
+        contract_symbol="NVDA260515C00145000",
+        entry_price=Decimal("2.50"),
+        current_price=Decimal("3.00"),
+        pnl_pct=Decimal("20"),
+        pnl_dollars=Decimal("50"),
+        quantity=1,
+        dte_remaining=9,
+        signals=[],
+        auto_close_triggered=False,
+        auto_close_reason=None,
+        urgent_count=0,
+        warning_count=0,
+        info_count=0,
+        needs_claude=True,
+    )
+
+
 def test_exit_candidate_validates() -> None:
     exit_c = ExitCandidate(
         position_id=42,
         ticker="NVDA",
         exit_signal_type="time_based",
         timestamp=datetime.now(UTC),
+        signal_trace=_make_signal_trace(),
+        pnl_pct=Decimal("20"),
+        pnl_dollars=Decimal("50"),
+        dte_remaining=9,
     )
     assert exit_c.candidate_kind == "exit"
     assert exit_c.position_id == 42
@@ -76,6 +105,10 @@ def test_exit_candidate_validates() -> None:
             ticker="X",
             exit_signal_type="invalid_signal",  # type: ignore[arg-type]
             timestamp=datetime.now(UTC),
+            signal_trace=_make_signal_trace(),
+            pnl_pct=Decimal("0"),
+            pnl_dollars=Decimal("0"),
+            dte_remaining=0,
         )
 
 
@@ -85,6 +118,10 @@ def test_candidate_union_accepts_both_kinds() -> None:
         ticker="X",
         exit_signal_type="pnl_based",
         timestamp=datetime.now(UTC),
+        signal_trace=_make_signal_trace(),
+        pnl_pct=Decimal("0"),
+        pnl_dollars=Decimal("0"),
+        dte_remaining=0,
     )
     assert exit_c.candidate_kind == "exit"
 

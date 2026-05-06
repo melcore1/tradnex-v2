@@ -13,6 +13,14 @@ from shared.strategy.base import (
     RuleType,
     Strategy,
 )
+from shared.strategy.exit_evaluator import evaluate_position_for_exit
+from shared.strategy.exit_settings import ExitSettings
+from shared.strategy.exit_signals import (
+    ExitSignal,
+    ExitSignalCategory,
+    ExitSignalSeverity,
+    ExitSignalTrace,
+)
 from shared.strategy.long_options_momentum import LongOptionsMomentum
 from shared.strategy.settings import (
     MarketWindow,
@@ -29,6 +37,11 @@ __all__ = [
     "EntryCandidate",
     "EntryDirection",
     "ExitCandidate",
+    "ExitSettings",
+    "ExitSignal",
+    "ExitSignalCategory",
+    "ExitSignalSeverity",
+    "ExitSignalTrace",
     "ExitSignalType",
     "LongOptionsMomentum",
     "MarketWindow",
@@ -41,4 +54,5 @@ __all__ = [
     "StrategySettings",
     "build_shortlist",
     "compute_position_size",
+    "evaluate_position_for_exit",
 ]
