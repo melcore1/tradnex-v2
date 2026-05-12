@@ -131,11 +131,17 @@ def make_market_data_client(
             def _tokens_provider() -> dict[str, Any]:
                 # Open a fresh connection each call so we always see the
                 # latest tokens written by the 25-min refresh task.
+                from datetime import UTC
+                from datetime import datetime as _dt
+
+                from shared.services.credentials import get_credential_record
+
                 conn = get_connection()
                 try:
                     tokens = get_credential_secrets(
                         conn, encryption_ref, "schwab_oauth", use_cache=False
                     )
+                    record = get_credential_record(conn, "schwab_oauth")
                 finally:
                     conn.close()
                 if not tokens:
@@ -143,7 +149,19 @@ def make_market_data_client(
                         "schwab_oauth tokens missing — connect via "
                         "Settings → Credentials → Schwab."
                     )
-                return tokens
+                # schwab-py wraps authlib's OAuth2Token, which needs either
+                # `expires_at` (epoch) or `expires_in` (seconds). We persist
+                # the access-token expiry in the DB `expires_at` column,
+                # not inside the secrets dict, so inject it here.
+                merged = dict(tokens)
+                if record is not None and record.expires_at is not None:
+                    expires_epoch = int(record.expires_at.timestamp())
+                    merged.setdefault("expires_at", expires_epoch)
+                    now_epoch = int(_dt.now(UTC).timestamp())
+                    merged.setdefault(
+                        "expires_in", max(0, expires_epoch - now_epoch)
+                    )
+                return merged
 
             return SchwabDataClient(
                 client_id=str(client_secrets["client_id"]),

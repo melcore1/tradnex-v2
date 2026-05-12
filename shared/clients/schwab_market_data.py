@@ -417,5 +417,20 @@ class SchwabDataClient(MarketDataClient):
         try:
             await self.get_market_status()
             return True
-        except Exception:
+        except Exception as exc:
+            # Phase 8a.5: emit the real exception so onboarding failures
+            # (missing expires_at, bad client_id, expired refresh window,
+            # etc.) are debuggable from the events stream instead of just
+            # showing "health_check_failed".
+            from shared.events import emit
+
+            emit(
+                "schwab_data",
+                "error",
+                "health_check_exception",
+                {
+                    "error": str(exc)[:300],
+                    "error_type": type(exc).__name__,
+                },
+            )
             return False

@@ -87,6 +87,8 @@ def test_schwab_path_uses_tokens_provider(conn, monkeypatch) -> None:
 
     importlib.reload(cfg)
 
+    from datetime import UTC, datetime, timedelta
+
     enc = get_test_encryption()
     upsert_credential(
         conn,
@@ -94,6 +96,7 @@ def test_schwab_path_uses_tokens_provider(conn, monkeypatch) -> None:
         "schwab_client",
         secrets={"client_id": "cid", "client_secret": "csec"},
     )
+    token_expires_at = datetime.now(UTC) + timedelta(minutes=29)
     upsert_credential(
         conn,
         enc,
@@ -104,6 +107,7 @@ def test_schwab_path_uses_tokens_provider(conn, monkeypatch) -> None:
             "token_type": "Bearer",
             "scope": "",
         },
+        expires_at=token_expires_at,
     )
 
     captured: dict[str, Any] = {}
@@ -136,6 +140,11 @@ def test_schwab_path_uses_tokens_provider(conn, monkeypatch) -> None:
     assert captured["asyncio"] is True
     # token_read_func returns wrapped {token: {...}, creation_timestamp: ...}
     wrapped = captured["read_func"]()
-    assert wrapped["token"]["access_token"] == "live_at"
-    assert wrapped["token"]["refresh_token"] == "live_rt"
+    inner = wrapped["token"]
+    assert inner["access_token"] == "live_at"
+    assert inner["refresh_token"] == "live_rt"
     assert "creation_timestamp" in wrapped
+    # Phase 8a.5 fix: factory injects expires_at + expires_in from the DB
+    # metadata so authlib (under schwab-py) can decide when to refresh.
+    assert inner["expires_at"] == int(token_expires_at.timestamp())
+    assert 1700 <= inner["expires_in"] <= 1800  # ~29 min, allow scheduler slack
