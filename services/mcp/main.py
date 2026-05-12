@@ -1,7 +1,7 @@
 """TradNex 2 MCP server entry point.
 
 Wraps `shared/analytics/` as a remote MCP server reachable from Claude.ai at
-`https://scout.meltradingmcp.uk/mcp` (and `/sse` for the legacy transport
+`https://scoutv2.meltradingmcp.uk/mcp` (and `/sse` for the legacy transport
 during the current Claude.ai connector regression).
 
 Run with: `python -m services.mcp.main` or via uvicorn directly:
@@ -44,8 +44,8 @@ logger = logging.getLogger(__name__)
 # metadata response (`/.well-known/oauth-protected-resource`). For a
 # private LAN deployment with shared-secret bearer auth, the URL just
 # needs to be a valid HTTP(S) URL; clients don't follow it.
-_RESOURCE_URL = AnyHttpUrl("https://scout.meltradingmcp.uk")
-_ISSUER_URL = AnyHttpUrl("https://scout.meltradingmcp.uk")
+_RESOURCE_URL = AnyHttpUrl("https://scoutv2.meltradingmcp.uk")
+_ISSUER_URL = AnyHttpUrl("https://scoutv2.meltradingmcp.uk")
 
 
 mcp = FastMCP(
