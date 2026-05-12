@@ -165,6 +165,32 @@ async def test_get_bars_maps_candles_to_bars() -> None:
     assert bars[0].vwap is None
 
 
+async def test_get_bars_daily_passes_year_period_type() -> None:
+    """Regression: Schwab rejects period_type=day + frequency_type=daily as 400.
+
+    Daily bars must pass period_type=year + frequency_type=daily.
+    """
+    mock = AsyncMock()
+    mock.get_price_history = AsyncMock(return_value=_make_response(200, SAMPLE_BARS_RESPONSE))
+    client = _client_with(mock)
+    await client.get_bars("AAPL", timeframe="1d", limit=10)
+    call_kwargs = mock.get_price_history.call_args.kwargs
+    assert call_kwargs["period_type"] == "year"
+    assert call_kwargs["frequency_type"] == "daily"
+
+
+async def test_get_bars_minute_passes_day_period_type() -> None:
+    """Regression: Minute bars must pass period_type=day + frequency_type=minute."""
+    mock = AsyncMock()
+    mock.get_price_history = AsyncMock(return_value=_make_response(200, SAMPLE_BARS_RESPONSE))
+    client = _client_with(mock)
+    await client.get_bars("AAPL", timeframe="5m", limit=10)
+    call_kwargs = mock.get_price_history.call_args.kwargs
+    assert call_kwargs["period_type"] == "day"
+    assert call_kwargs["frequency_type"] == "minute"
+    assert call_kwargs["frequency"] == 5
+
+
 async def test_get_bars_intraday_keeps_vwap() -> None:
     mock = AsyncMock()
     mock.get_price_history = AsyncMock(return_value=_make_response(200, SAMPLE_BARS_RESPONSE))
@@ -243,6 +269,22 @@ async def test_get_options_chain_maps_calls_and_puts() -> None:
     assert call.iv == Decimal("0.285")
     assert call.delta == Decimal("0.52")
     assert call.symbol == "AAPL  260515C00228000".strip()
+
+
+async def test_get_options_chain_handles_null_underlying() -> None:
+    """Regression: Schwab returns ``"underlying": null`` (not missing) in some
+    responses (e.g. mid-after-hours, low-volume names). ``data.get(key, {})``
+    only kicks in for missing keys — explicit None values bypass the default
+    and cause ``AttributeError: 'NoneType' object has no attribute 'get'``.
+    """
+    mock = AsyncMock()
+    response_with_null = {**SAMPLE_CHAIN_RESPONSE, "underlying": None}
+    mock.get_option_chain = AsyncMock(return_value=_make_response(200, response_with_null))
+    client = _client_with(mock)
+    chain = await client.get_options_chain("AAPL", contract_type="both")
+    assert chain.underlying == "AAPL"
+    assert chain.spot_at_fetch == Decimal("0")  # falls back to 0 when underlying missing
+    assert len(chain.calls_only()) == 1
 
 
 async def test_get_options_chain_filters_by_dte() -> None:

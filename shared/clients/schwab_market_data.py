@@ -50,12 +50,17 @@ class SchwabApiError(Exception):
     """Schwab returned 5xx or another unexpected error."""
 
 
-_TIMEFRAME_TO_SCHWAB = {
-    "1m": ("minute", 1),
-    "5m": ("minute", 5),
-    "15m": ("minute", 15),
-    "1h": ("minute", 30),  # Schwab has no 1h native; 30m and aggregate later if needed
-    "1d": ("daily", 1),
+# Schwab's price-history API requires *compatible* period_type + frequency_type.
+# Invalid combinations (e.g. period_type=day + frequency_type=daily) return 400.
+# Reference: https://developer.schwab.com/products/trader-api--individual/details/specifications/Retail%20Trader%20API%20Production
+#   period_type=day  → frequency_type=minute  (period: 1-5, 10)
+#   period_type=year → frequency_type=daily|weekly|monthly (period: 1-3, 5, 10, 15, 20)
+_TIMEFRAME_TO_SCHWAB: dict[str, dict[str, Any]] = {
+    "1m":  {"period_type": "day",  "period": 10, "frequency_type": "minute", "frequency": 1},
+    "5m":  {"period_type": "day",  "period": 10, "frequency_type": "minute", "frequency": 5},
+    "15m": {"period_type": "day",  "period": 10, "frequency_type": "minute", "frequency": 15},
+    "1h":  {"period_type": "day",  "period": 10, "frequency_type": "minute", "frequency": 30},
+    "1d":  {"period_type": "year", "period": 1,  "frequency_type": "daily",  "frequency": 1},
 }
 
 
@@ -211,12 +216,14 @@ class SchwabDataClient(MarketDataClient):
         limit: int = 200,
         end: datetime | None = None,
     ) -> list[Bar]:
-        freq_type, freq = _TIMEFRAME_TO_SCHWAB[timeframe]
+        params = _TIMEFRAME_TO_SCHWAB[timeframe]
         end_ts = end or datetime.now(UTC)
         response = await self._client.get_price_history(
             ticker,
-            frequency_type=freq_type,
-            frequency=freq,
+            period_type=params["period_type"],
+            period=params["period"],
+            frequency_type=params["frequency_type"],
+            frequency=params["frequency"],
             end_datetime=end_ts,
         )
         self._raise_for_status(response)
@@ -289,20 +296,25 @@ class SchwabDataClient(MarketDataClient):
         data = response.json()
 
         underlying = ticker.upper()
-        spot = _decimal(data.get("underlying", {}).get("last", 0))
+        # Schwab returns "underlying": null when underlying data isn't available
+        # (e.g. mid-after-hours, certain low-volume names). `.get(key, {})`
+        # only kicks the default in when the key is missing, NOT when the
+        # value is None — so guard with `or {}`.
+        underlying_block = data.get("underlying") or {}
+        spot = _decimal(underlying_block.get("last", 0))
 
         contracts: list[OptionContract] = []
         if contract_type in ("call", "both"):
             for _, strikes in (data.get("callExpDateMap") or {}).items():
-                for _, contract_list in strikes.items():
-                    for c in contract_list:
+                for _, contract_list in (strikes or {}).items():
+                    for c in contract_list or []:
                         contracts.append(
                             self._map_option_contract(c, underlying, spot, "call")
                         )
         if contract_type in ("put", "both"):
             for _, strikes in (data.get("putExpDateMap") or {}).items():
-                for _, contract_list in strikes.items():
-                    for c in contract_list:
+                for _, contract_list in (strikes or {}).items():
+                    for c in contract_list or []:
                         contracts.append(
                             self._map_option_contract(c, underlying, spot, "put")
                         )
