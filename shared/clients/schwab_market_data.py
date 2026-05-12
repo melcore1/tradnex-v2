@@ -228,12 +228,17 @@ class SchwabDataClient(MarketDataClient):
         )
 
     async def get_quote(self, ticker: str) -> Quote:
-        response = await self._client.get_quote(ticker)
+        # schwab-py defaults to fields=None which Schwab interprets as
+        # "quote block only" — the `fundamental` block (avg30DaysVolume,
+        # etc.) is omitted. Request both blocks explicitly so
+        # Quote.avg_volume_30d isn't silently zero in production.
+        response = await self._client.get_quote(ticker, fields="quote,fundamental")
         self._raise_for_status(response)
         return self._map_quote(ticker, response.json())
 
     async def get_quotes(self, tickers: list[str]) -> dict[str, Quote]:
-        response = await self._client.get_quotes(tickers)
+        # See get_quote — request the `fundamental` block explicitly.
+        response = await self._client.get_quotes(tickers, fields="quote,fundamental")
         self._raise_for_status(response)
         data = response.json()
         return {t.upper(): self._map_quote(t, data) for t in tickers}
