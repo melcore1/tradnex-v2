@@ -55,9 +55,15 @@ export const EVENT_TO_QUERIES: Record<string, readonly QueryKey[]> = {
   calendar_refreshed: [queryKeys.dashboard.morningView],
 
   // ---- Credentials (Phase 8a) ----
-  credentials_updated: [queryKeys.credentials.all],
-  credentials_deleted: [queryKeys.credentials.all],
+  credentials_updated: [queryKeys.credentials.all, queryKeys.system.dataStatus],
+  credentials_deleted: [queryKeys.credentials.all, queryKeys.system.dataStatus],
   env_credential_migrated: [queryKeys.credentials.all],
+
+  // ---- Schwab OAuth (Phase 8a.5) ----
+  oauth_completed: [queryKeys.credentials.all, queryKeys.system.dataStatus],
+  oauth_disconnected: [queryKeys.credentials.all, queryKeys.system.dataStatus],
+  token_refreshed: [queryKeys.credentials.all, queryKeys.system.dataStatus],
+  refresh_token_expiring: [queryKeys.system.dataStatus],
 }
 
 export interface SseEventEnvelope {

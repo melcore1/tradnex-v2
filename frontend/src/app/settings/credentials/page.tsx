@@ -1,8 +1,12 @@
 'use client'
 
+import { Suspense, useEffect } from 'react'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { CredentialEditor } from '@/components/credentials/CredentialEditor'
+import { SchwabCredentialCard } from '@/components/credentials/SchwabCredentialCard'
 import { useCredentials } from '@/hooks/useCredentials'
 import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { toast } from '@/components/ui/sonner'
 import type { CredentialRecord, CredentialType } from '@/lib/api/credentials'
 
 const ALPACA_FIELDS = [
@@ -13,6 +17,22 @@ const ALPACA_FIELDS = [
 const SINGLE_KEY_FIELDS = [
   { name: 'api_key', label: 'API key', type: 'password' as const },
 ]
+
+function SchwabConnectedToast() {
+  const router = useRouter()
+  const pathname = usePathname()
+  const search = useSearchParams()
+  const schwabConnected = search.get('schwab') === 'connected'
+
+  useEffect(() => {
+    if (schwabConnected) {
+      toast.success('Schwab connected')
+      router.replace(pathname)
+    }
+  }, [schwabConnected, router, pathname])
+
+  return null
+}
 
 export default function CredentialsSettingsPage() {
   const { data, isLoading, error } = useCredentials()
@@ -25,6 +45,9 @@ export default function CredentialsSettingsPage() {
 
   return (
     <div className="flex flex-col gap-6">
+      <Suspense fallback={null}>
+        <SchwabConnectedToast />
+      </Suspense>
       <Card>
         <CardHeader>
           <CardTitle>Encryption</CardTitle>
@@ -58,14 +81,9 @@ export default function CredentialsSettingsPage() {
 
       <section className="flex flex-col gap-3">
         <h2 className="text-lg font-semibold">Market data — Schwab</h2>
-        <CredentialEditor
-          type="schwab_oauth"
-          title="Schwab"
-          description="OAuth flow handled in a future phase."
-          fields={[]}
-          record={recordOf('schwab_oauth')}
-          disabled
-          disabledMessage="Pending Schwab API approval. The OAuth flow lands in a later phase; until then, market data uses the mock client."
+        <SchwabCredentialCard
+          clientRecord={recordOf('schwab_client')}
+          oauthRecord={recordOf('schwab_oauth')}
         />
       </section>
 

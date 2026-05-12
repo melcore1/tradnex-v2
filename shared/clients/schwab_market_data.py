@@ -8,6 +8,8 @@ inject a pre-built AsyncClient via the `_client` kwarg to bypass real auth.
 from __future__ import annotations
 
 import asyncio
+import time as _time
+from collections.abc import Callable
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -79,10 +81,52 @@ class SchwabDataClient(MarketDataClient):
         redirect_uri: str | None = None,
         token_path: str | None = None,
         *,
+        tokens_provider: Callable[[], dict[str, Any]] | None = None,
+        tokens_writer: Callable[[dict[str, Any]], None] | None = None,
         _client: AsyncClient | None = None,
     ) -> None:
         if _client is not None:
             self._client = _client
+            return
+
+        if tokens_provider is not None:
+            # Phase 8a.5 path: tokens come from the encrypted credentials
+            # store via a caller-supplied closure. `tokens_writer` (optional)
+            # is invoked when schwab-py auto-refreshes; default is no-op
+            # because the 25-min background task owns refresh.
+            if not client_id or not client_secret:
+                raise SchwabAuthRequired(
+                    "Schwab credentials required: client_id, client_secret"
+                )
+            try:
+                from schwab.auth import client_from_access_functions
+            except ImportError as e:  # pragma: no cover
+                raise SchwabAuthRequired(f"schwab-py not installed: {e}") from e
+
+            def _read() -> dict[str, Any]:
+                inner = tokens_provider()
+                if not inner:
+                    raise SchwabAuthRequired(
+                        "Schwab tokens missing from credentials store"
+                    )
+                return {"token": inner, "creation_timestamp": _time.time()}
+
+            def _write(token: dict[str, Any], *args: Any, **kwargs: Any) -> None:
+                if tokens_writer is not None:
+                    tokens_writer(token)
+
+            try:
+                self._client = client_from_access_functions(
+                    api_key=client_id,
+                    app_secret=client_secret,
+                    token_read_func=_read,
+                    token_write_func=_write,
+                    asyncio=True,
+                )
+            except Exception as e:
+                raise SchwabAuthRequired(
+                    f"Failed to build Schwab client from tokens_provider: {e}"
+                ) from e
             return
 
         if not all([client_id, client_secret, redirect_uri, token_path]):

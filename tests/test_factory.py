@@ -1,6 +1,9 @@
 import pytest
 
-from shared.clients.factory import make_market_data_client
+from shared.clients.factory import (
+    DataClientNotConfigured,
+    make_market_data_client,
+)
 from shared.clients.mock_market_data import MockDataClient
 from shared.config import Settings
 
@@ -20,19 +23,10 @@ def test_factory_returns_mock_for_mock_setting() -> None:
     assert isinstance(client, MockDataClient)
 
 
-def test_factory_raises_on_schwab_with_empty_creds() -> None:
-    settings = _settings(DATA_CLIENT="schwab", SCHWAB_CLIENT_ID=None, SCHWAB_CLIENT_SECRET=None)
-    with pytest.raises(ValueError, match="DATA_CLIENT=schwab"):
-        make_market_data_client(settings)
-
-
-def test_factory_raises_on_schwab_with_only_id() -> None:
-    settings = _settings(
-        DATA_CLIENT="schwab",
-        SCHWAB_CLIENT_ID="some-id",
-        SCHWAB_CLIENT_SECRET=None,
-    )
-    with pytest.raises(ValueError, match="DATA_CLIENT=schwab"):
+def test_factory_raises_on_schwab_without_db_or_encryption() -> None:
+    """Phase 8a.5: Schwab path requires db + encryption to read schwab_client."""
+    settings = _settings(DATA_CLIENT="schwab")
+    with pytest.raises(DataClientNotConfigured, match="db \\+ encryption"):
         make_market_data_client(settings)
 
 

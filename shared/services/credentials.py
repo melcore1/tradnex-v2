@@ -31,6 +31,7 @@ from shared.services.encryption import EncryptionService
 CredentialType = Literal[
     "alpaca_paper",
     "alpaca_live",
+    "schwab_client",
     "schwab_oauth",
     "finnhub",
     "exa",
@@ -39,6 +40,7 @@ CredentialType = Literal[
 VALID_CREDENTIAL_TYPES: tuple[CredentialType, ...] = (
     "alpaca_paper",
     "alpaca_live",
+    "schwab_client",
     "schwab_oauth",
     "finnhub",
     "exa",

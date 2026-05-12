@@ -43,6 +43,7 @@ export const queryKeys = {
   system: {
     all: ['system'] as const,
     status: ['system', 'status'] as const,
+    dataStatus: ['system', 'data-status'] as const,
   },
   prompts: {
     all: ['prompts'] as const,

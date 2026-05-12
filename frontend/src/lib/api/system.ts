@@ -19,6 +19,20 @@ export interface ToggleRequest {
   enabled: boolean
 }
 
+export interface SchwabTokenStatus {
+  access_expires_at: string | null
+  refresh_expires_at: string | null
+  refresh_token_hours_remaining: number | null
+}
+
+export interface DataStatus {
+  active_client: 'mock' | 'schwab'
+  is_configured: boolean
+  schwab_oauth_enabled: boolean
+  schwab_token_status: SchwabTokenStatus | null
+  last_quote_ts: string | null
+}
+
 export const systemApi = {
   status: () => apiFetch<SystemStatusResponse>('/api/system/status'),
   toggle: (req: ToggleRequest) =>
@@ -26,4 +40,5 @@ export const systemApi = {
       method: 'POST',
       body: req,
     }),
+  dataStatus: () => apiFetch<DataStatus>('/api/system/data-status'),
 }

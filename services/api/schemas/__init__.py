@@ -68,11 +68,12 @@ class FullContextResponse(BaseModel):
 # ---- Credentials (Phase 8a) ----
 
 # Allowed credential_type values must mirror the CHECK constraint in
-# `migrations/0010_credentials.sql` and the CredentialType literal in
-# `shared/services/credentials.py`.
+# `migrations/0010_credentials.sql` (extended by 0011) and the
+# CredentialType literal in `shared/services/credentials.py`.
 CredentialTypeLiteral = Literal[
     "alpaca_paper",
     "alpaca_live",
+    "schwab_client",
     "schwab_oauth",
     "finnhub",
     "exa",
@@ -200,6 +201,29 @@ class SystemStatusResponse(BaseModel):
 class ToggleRequest(BaseModel):
     name: Literal["paused", "monitor_paused", "llm_enabled"]
     enabled: bool
+
+
+class SchwabTokenStatus(BaseModel):
+    """Schwab OAuth token expirations exposed to the UI."""
+
+    access_expires_at: datetime | None = None
+    refresh_expires_at: datetime | None = None
+    refresh_token_hours_remaining: float | None = None
+
+
+class DataStatusResponse(BaseModel):
+    """`/api/system/data-status` — live state of the market-data layer.
+
+    Phase 8a.5. The UI uses this to confirm Schwab is connected, show
+    expiration warnings, and trigger reauthentication when the rolling
+    refresh window narrows.
+    """
+
+    active_client: Literal["mock", "schwab"]
+    is_configured: bool
+    schwab_oauth_enabled: bool
+    schwab_token_status: SchwabTokenStatus | None = None
+    last_quote_ts: datetime | None = None
 
 
 class PromptVersionResponse(BaseModel):

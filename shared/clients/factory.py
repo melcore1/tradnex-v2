@@ -13,6 +13,7 @@ CLI) fall back to env-only behavior — that path will be removed in 8b.
 from __future__ import annotations
 
 import sqlite3
+from typing import Any
 
 from shared.clients.calendar_feed import CalendarFeed
 from shared.clients.claude_cli import ClaudeCliClient
@@ -62,26 +63,70 @@ def _resolve_secret(
     return env_value
 
 
-def make_market_data_client(config: Settings) -> MarketDataClient:
+class DataClientNotConfigured(RuntimeError):
+    """DATA_CLIENT=schwab but the encrypted credentials store isn't ready."""
+
+
+def make_market_data_client(
+    config: Settings,
+    *,
+    db: sqlite3.Connection | None = None,
+    encryption: EncryptionService | None = None,
+) -> MarketDataClient:
     """Construct the market-data client selected by Settings.DATA_CLIENT.
 
-    Schwab credentials remain in env for Phase 8a — the OAuth flow that
-    populates the `schwab_oauth` credential lands in 8c.
+    Phase 8a.5: when DATA_CLIENT=schwab, both `db` and `encryption` must be
+    supplied so the factory can read `schwab_client` (Client ID/Secret) from
+    the encrypted store and build a `tokens_provider` closure that returns
+    the latest `schwab_oauth` tokens on every Schwab API call.
+
+    Raises:
+        DataClientNotConfigured: when DATA_CLIENT=schwab but db/encryption
+            aren't provided, or when `schwab_client` isn't seeded.
     """
     match config.DATA_CLIENT:
         case "mock":
             return MockDataClient(seed=config.MOCK_SEED)
         case "schwab":
-            if not config.SCHWAB_CLIENT_ID or not config.SCHWAB_CLIENT_SECRET:
-                raise ValueError(
-                    "DATA_CLIENT=schwab but SCHWAB_CLIENT_ID/SECRET are empty. "
-                    "Add credentials to .env or set DATA_CLIENT=mock."
+            if db is None or encryption is None:
+                raise DataClientNotConfigured(
+                    "DATA_CLIENT=schwab requires db + encryption (Phase 8a.5)"
                 )
+            client_secrets = get_credential_secrets(db, encryption, "schwab_client")
+            if (
+                not client_secrets
+                or not client_secrets.get("client_id")
+                or not client_secrets.get("client_secret")
+            ):
+                raise DataClientNotConfigured(
+                    "DATA_CLIENT=schwab but schwab_client credential not "
+                    "configured. Visit Settings → Credentials → Schwab to "
+                    "enter Client ID and Secret."
+                )
+
+            def _tokens_provider() -> dict[str, Any]:
+                # Open a fresh connection each call so we always see the
+                # latest tokens written by the 25-min refresh task.
+                from shared.db import get_connection
+
+                conn = get_connection()
+                try:
+                    tokens = get_credential_secrets(
+                        conn, encryption, "schwab_oauth", use_cache=False
+                    )
+                finally:
+                    conn.close()
+                if not tokens:
+                    raise DataClientNotConfigured(
+                        "schwab_oauth tokens missing — connect via "
+                        "Settings → Credentials → Schwab."
+                    )
+                return tokens
+
             return SchwabDataClient(
-                client_id=config.SCHWAB_CLIENT_ID,
-                client_secret=config.SCHWAB_CLIENT_SECRET,
-                redirect_uri=config.SCHWAB_REDIRECT_URI,
-                token_path=config.SCHWAB_TOKEN_PATH,
+                client_id=str(client_secrets["client_id"]),
+                client_secret=str(client_secrets["client_secret"]),
+                tokens_provider=_tokens_provider,
             )
         case _:
             raise ValueError(f"Unknown DATA_CLIENT: {config.DATA_CLIENT}")
