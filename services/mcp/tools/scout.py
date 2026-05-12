@@ -20,7 +20,7 @@ from shared.analytics import (
 from shared.clients.market_data import MarketDataClient
 
 MAX_TICKERS_PER_CALL = 10
-MAX_DTE_FOR_CHAIN = 14
+MAX_DTE_FOR_CHAIN = 45
 
 
 async def scout(
@@ -34,8 +34,8 @@ async def scout(
         raise ValueError("ticker must not be empty")
     if len(tickers) > MAX_TICKERS_PER_CALL:
         raise ValueError(f"Maximum {MAX_TICKERS_PER_CALL} tickers per call")
-    if days_history < 30 or days_history > 500:
-        raise ValueError("days_history must be between 30 and 500")
+    if days_history < 60 or days_history > 500:
+        raise ValueError("days_history must be between 60 and 500")
 
     results = await asyncio.gather(
         *(_one(t.upper(), days_history, client) for t in tickers),

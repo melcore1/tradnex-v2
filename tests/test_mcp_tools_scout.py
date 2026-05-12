@@ -24,7 +24,7 @@ def mock_client() -> MockDataClient:
 async def test_single_ticker_returns_full_block(
     db_with_env: object, mock_client: MockDataClient
 ) -> None:
-    result = await scout("SPY", days_history=60, client=mock_client)
+    result = await scout("SPY", days_history=250, client=mock_client)
     assert result["ticker"] == "SPY"
     assert "tier2" in result
     assert "tier3_options" in result
@@ -38,7 +38,7 @@ async def test_single_ticker_returns_full_block(
 async def test_multi_ticker_returns_dict(
     db_with_env: object, mock_client: MockDataClient
 ) -> None:
-    result = await scout(["SPY", "NVDA"], days_history=60, client=mock_client)
+    result = await scout(["SPY", "NVDA"], days_history=250, client=mock_client)
     assert set(result.keys()) == {"SPY", "NVDA"}
 
 
@@ -46,7 +46,7 @@ async def test_too_many_tickers_raises(
     db_with_env: object, mock_client: MockDataClient
 ) -> None:
     with pytest.raises(ValueError, match="Maximum"):
-        await scout(["A"] * 11, days_history=60, client=mock_client)
+        await scout(["A"] * 11, days_history=250, client=mock_client)
 
 
 async def test_days_history_out_of_range_raises(
@@ -61,7 +61,7 @@ async def test_days_history_out_of_range_raises(
 async def test_options_block_included_when_chain_present(
     db_with_env: object, mock_client: MockDataClient
 ) -> None:
-    result = await scout("NVDA", days_history=60, client=mock_client)
+    result = await scout("NVDA", days_history=250, client=mock_client)
     options = result["tier3_options"]
     assert options is not None
     assert "gex" in options

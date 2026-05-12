@@ -52,7 +52,7 @@ async def quick_check(
 async def _one(ticker: str, client: MarketDataClient) -> dict[str, Any]:
     """Compute quick_check for a single ticker."""
     quote_task = client.get_quote(ticker)
-    bars_task = client.get_bars(ticker, timeframe="1d", limit=60)
+    bars_task = client.get_bars(ticker, timeframe="1d", limit=250)
     quote, bars = await asyncio.gather(quote_task, bars_task)
 
     analysis = await compute_full_analysis(ticker, bars)
