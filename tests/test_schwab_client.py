@@ -271,6 +271,91 @@ async def test_get_options_chain_maps_calls_and_puts() -> None:
     assert call.symbol == "AAPL  260515C00228000".strip()
 
 
+async def test_get_options_chain_handles_iso_expiration_date() -> None:
+    """Regression: Schwab Trader API returns ``expirationDate`` as an ISO-format
+    string (e.g. ``"2026-05-19T20:00:00.000+00:00"``), NOT as int millis-epoch.
+
+    The pre-fix code did ``exp_ms / 1000`` which raised
+    ``TypeError: unsupported operand type(s) for /: 'str' and 'int'``.
+    """
+    iso_response = {
+        **SAMPLE_CHAIN_RESPONSE,
+        "callExpDateMap": {
+            "2026-05-15:9": {
+                "228.0": [
+                    {
+                        **SAMPLE_CHAIN_RESPONSE["callExpDateMap"]["2026-05-15:9"]["228.0"][0],
+                        "expirationDate": "2026-05-15T20:00:00.000+00:00",
+                    }
+                ],
+            }
+        },
+        "putExpDateMap": {
+            "2026-05-15:9": {
+                "228.0": [
+                    {
+                        **SAMPLE_CHAIN_RESPONSE["putExpDateMap"]["2026-05-15:9"]["228.0"][0],
+                        "expirationDate": "2026-05-15T20:00:00.000+00:00",
+                    }
+                ],
+            }
+        },
+    }
+    mock = AsyncMock()
+    mock.get_option_chain = AsyncMock(return_value=_make_response(200, iso_response))
+    client = _client_with(mock)
+    chain = await client.get_options_chain("AAPL", contract_type="both")
+    assert len(chain.calls_only()) == 1
+    assert chain.calls_only()[0].expiration.isoformat() == "2026-05-15"
+
+
+async def test_get_options_chain_handles_date_only_expiration_string() -> None:
+    """Schwab sometimes returns a date-only string like "2026-05-15"."""
+    date_only = {
+        **SAMPLE_CHAIN_RESPONSE,
+        "callExpDateMap": {
+            "2026-05-15:9": {
+                "228.0": [
+                    {
+                        **SAMPLE_CHAIN_RESPONSE["callExpDateMap"]["2026-05-15:9"]["228.0"][0],
+                        "expirationDate": "2026-05-15",
+                    }
+                ],
+            }
+        },
+        "putExpDateMap": {},
+    }
+    mock = AsyncMock()
+    mock.get_option_chain = AsyncMock(return_value=_make_response(200, date_only))
+    client = _client_with(mock)
+    chain = await client.get_options_chain("AAPL", contract_type="call")
+    assert chain.calls_only()[0].expiration.isoformat() == "2026-05-15"
+
+
+async def test_get_options_chain_handles_null_days_to_expiration() -> None:
+    """Regression: when the chain row has ``daysToExpiration: null`` (e.g.
+    early-bird non-standard contracts), ``int(None)`` raises ``TypeError``."""
+    null_dte = {
+        **SAMPLE_CHAIN_RESPONSE,
+        "callExpDateMap": {
+            "2026-05-15:9": {
+                "228.0": [
+                    {
+                        **SAMPLE_CHAIN_RESPONSE["callExpDateMap"]["2026-05-15:9"]["228.0"][0],
+                        "daysToExpiration": None,
+                    }
+                ],
+            }
+        },
+        "putExpDateMap": {},
+    }
+    mock = AsyncMock()
+    mock.get_option_chain = AsyncMock(return_value=_make_response(200, null_dte))
+    client = _client_with(mock)
+    chain = await client.get_options_chain("AAPL", contract_type="call")
+    assert chain.calls_only()[0].dte == 0
+
+
 async def test_get_options_chain_handles_null_underlying() -> None:
     """Regression: Schwab returns ``"underlying": null`` (not missing) in some
     responses (e.g. mid-after-hours, low-volume names). ``data.get(key, {})``
@@ -325,6 +410,23 @@ async def test_get_account_state_maps_balances() -> None:
     assert state.buying_power == Decimal("100000")
     assert state.is_pdt is False
     assert state.margin_buying_power is None  # cash account
+    assert state.pdt_count_remaining == 3
+
+
+async def test_get_account_state_handles_null_round_trips() -> None:
+    """Regression: ``roundTrips`` is occasionally null in real responses; the
+    pre-fix ``int(None)`` would raise ``TypeError``."""
+    detail = {
+        "securitiesAccount": {
+            **SAMPLE_ACCOUNT_DETAIL["securitiesAccount"],
+            "roundTrips": None,
+        }
+    }
+    mock = AsyncMock()
+    mock.get_account_numbers = AsyncMock(return_value=_make_response(200, SAMPLE_ACCOUNT_NUMBERS))
+    mock.get_account = AsyncMock(return_value=_make_response(200, detail))
+    client = _client_with(mock)
+    state = await client.get_account_state()
     assert state.pdt_count_remaining == 3
 
 
