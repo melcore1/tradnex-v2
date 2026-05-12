@@ -76,32 +76,68 @@ Subcommands: `quote <T>`, `quotes <T1> <T2>...`, `bars <T> --timeframe 1d --limi
 `chain <T> --min-dte 3 --max-dte 14 --type call`, `account`, `movers`, `status`.
 Append `--json` to any command for raw JSON output.
 
-## Activating Schwab data (when API approval lands)
+## Activating Schwab data
 
-Phase 1a ships the Schwab client fully built; flipping it on once approved is a
-config change, not a code change.
+Phase 8a.5 wires Schwab OAuth into the Settings → Credentials page. The
+old `scripts/schwab_auth.py` flow still works as an emergency bootstrap
+but is no longer the primary path.
 
-1. Add credentials to `.env`:
+### Prerequisites
 
-       SCHWAB_CLIENT_ID=<from developer portal>
-       SCHWAB_CLIENT_SECRET=<from developer portal>
-       SCHWAB_REDIRECT_URI=https://127.0.0.1:8443
+1. Create a Schwab Developer App at `developer.schwab.com`:
+   - Products: Accounts and Trading Production + Market Data Production
+   - Callback URL: `https://<your-domain>/api/schwab/oauth/callback`
+     (must be HTTPS — Schwab rejects plain HTTP except for explicit
+     loopback grants)
+   - Order Limit: 120
+2. Wait for "Ready For Use" status, then copy Client ID + Client Secret.
+3. In `.env`, set `SCHWAB_REDIRECT_URI` to match the callback URL above.
+   For local development, run the frontend + API behind Caddy with a
+   local TLS cert so the redirect URI is reachable over HTTPS.
 
-2. Run one-time auth (opens browser, log in to your **brokerage** account):
+### UI flow (recommended)
 
-       .venv/bin/python scripts/schwab_auth.py
-
-3. Flip `DATA_CLIENT=schwab` in `.env`.
-
-4. Restart the data service:
+1. Open `Settings → Credentials → Schwab` — the card initially shows
+   "Connect your account."
+2. Paste Client ID + Client Secret, save. The card transitions to
+   "Ready to connect."
+3. Click **Connect Schwab**. The browser redirects to Schwab; log in and
+   approve. You'll land back on `/settings/credentials?schwab=connected`
+   with the card now showing **Connected** plus token expirations.
+4. Flip `DATA_CLIENT=schwab` in `.env`.
+5. Restart the data service:
 
        docker compose restart data
 
-5. Verify:
+6. Verify the data layer end-to-end:
 
-       .venv/bin/python -m services.data.cli quote NVDA
+       .venv/bin/python -m services.data.cli smoke-test
 
-   Should return a real-time NVDA quote.
+   This walks every analytic tier against SPY / NVDA / AAPL and prints
+   PASS/FAIL per check. Add `--calibration` to print expected-range
+   comparisons.
+
+7. Confirm via the API:
+
+       curl -b cookies.txt http://localhost/api/system/data-status
+
+   Should return `active_client: "schwab"` with `is_configured: true`
+   and non-null `schwab_token_status` expirations.
+
+Access tokens auto-refresh every 25 minutes via the data service's
+scheduler. Refresh tokens have a 7-day rolling window: the UI shows a
+warning banner under 24 hours remaining, and you can disconnect from the
+Credentials page to invalidate the session entirely.
+
+### Fallback: import an existing token file
+
+If you still have a token file from a previous `scripts/schwab_auth.py`
+bootstrap and frontend OAuth is unavailable, import it directly:
+
+    .venv/bin/python -m services.api.cli import-schwab-token \
+        --file /data/schwab_token.json
+
+After import, the file can be deleted — tokens live encrypted in the DB.
 
 ## Analytics
 

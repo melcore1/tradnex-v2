@@ -17,10 +17,15 @@ class Settings(BaseSettings):
     HALT_POLL_MARKET_SECONDS: int = 30
     HALT_POLL_OFF_HOURS_SECONDS: int = 300
 
+    # Phase 8a.5: Schwab credentials migrated to encrypted DB store
+    # (`schwab_client` for app creds, `schwab_oauth` for user tokens).
+    # The env vars below are kept only so the legacy `scripts/schwab_auth.py`
+    # CLI bootstrap still functions; new installs configure via the UI.
     SCHWAB_CLIENT_ID: str | None = None
     SCHWAB_CLIENT_SECRET: str | None = None
-    SCHWAB_REDIRECT_URI: str = "https://127.0.0.1:8443"
+    SCHWAB_REDIRECT_URI: str = "https://localhost/api/schwab/oauth/callback"
     SCHWAB_TOKEN_PATH: str = "/data/schwab_token.json"
+    SCHWAB_OAUTH_ENABLED: bool = True
 
     FINNHUB_API_KEY: str | None = None
     EXA_API_KEY: str | None = None

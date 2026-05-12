@@ -44,7 +44,7 @@ def _ensure_valid_type(credential_type: str) -> CredentialType:
                 f"{sorted(VALID_CREDENTIAL_TYPES)}"
             ),
         )
-    return credential_type  # type: ignore[return-value]
+    return credential_type
 
 
 def _record_to_response(record: object) -> CredentialRecordResponse:

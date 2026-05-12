@@ -712,6 +712,17 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("ticker")
 
     wl_p = sub.add_parser("watchlist", help="Daily watchlist management")
+    smoke_p = sub.add_parser(
+        "smoke-test",
+        help="End-to-end check of the data layer against fixed tickers (Phase 8a.5)",
+    )
+    smoke_p.add_argument(
+        "--calibration",
+        action="store_true",
+        help="Print expected-range calibration comparisons",
+    )
+    smoke_p.add_argument("--json", action="store_true")
+
     wl_sub = wl_p.add_subparsers(dest="action", required=True)
     wl_sub.add_parser("show", help="Show today's active watchlist")
     s = wl_sub.add_parser("set", help="Replace today's watchlist")
@@ -893,9 +904,136 @@ _HANDLERS["universe"] = _cmd_universe  # type: ignore[assignment]
 _HANDLERS["watchlist"] = _cmd_watchlist  # type: ignore[assignment]
 
 
+_SMOKE_TICKERS = ("SPY", "NVDA", "AAPL")
+
+
+async def _cmd_smoke_test(
+    client: MarketDataClient, args: argparse.Namespace
+) -> None:
+    """End-to-end validation of the data layer against the configured client.
+
+    Phase 8a.5 deliverable. Walks Tier 1–4 calls for SPY/NVDA/AAPL and
+    prints PASS/FAIL with absolute values. Exit code is 0 only when every
+    check passes.
+    """
+    print(f"Smoke Test — Data Layer ({settings.DATA_CLIENT})")
+    print()
+    failures: list[str] = []
+
+    async def _check(name: str, coro: Any) -> Any:
+        try:
+            result = await coro
+            print(f"  PASS  {name}")
+            return result
+        except Exception as exc:
+            failures.append(f"{name}: {exc!r}")
+            print(f"  FAIL  {name}: {type(exc).__name__}: {exc}")
+            return None
+
+    print("Tier 1 (Quotes & Chains):")
+    quotes: dict[str, Any] = {}
+    for ticker in _SMOKE_TICKERS:
+        quote = await _check(f"quote {ticker}", client.get_quote(ticker))
+        if quote is not None:
+            quotes[ticker] = quote
+            print(f"        spot={quote.spot}  vol={quote.volume:,}")
+    await _check(
+        "options chain SPY (0-7 DTE)",
+        client.get_options_chain("SPY", min_dte=0, max_dte=7),
+    )
+    await _check("account state", client.get_account_state())
+    print()
+
+    print("Tier 2 (Analytics):")
+    for ticker in ("SPY", "NVDA"):
+        bars = await _check(
+            f"bars {ticker} (1d × 200)",
+            client.get_bars(ticker, timeframe="1d", limit=200),
+        )
+        if bars is not None:
+            try:
+                analysis = await compute_full_analysis(ticker, bars)
+                print(
+                    f"        {ticker} RSI(14)={analysis.rsi.latest}  "
+                    f"ADX(14)={analysis.adx.latest_adx}  "
+                    f"ATR%spot={analysis.atr.latest_pct_of_spot}"
+                )
+                print(f"        regime={analysis.regime.overall}")
+            except Exception as exc:
+                failures.append(f"compute_full_analysis {ticker}: {exc!r}")
+                print(f"  FAIL  full analysis {ticker}: {exc}")
+    print()
+
+    print("Tier 3 (Options):")
+    chain = await _check(
+        "options chain NVDA (0-30 DTE)",
+        client.get_options_chain("NVDA", min_dte=0, max_dte=30),
+    )
+    if chain is not None:
+        conn = get_connection()
+        try:
+            opts = compute_options_analysis(chain, conn)
+            print(
+                f"        net GEX={opts.gex.net_gex}  regime={opts.gex.regime}"
+            )
+            print(
+                f"        skew={opts.skew.regime}  "
+                f"IV rank={opts.iv_rank.rank if opts.iv_rank else 'n/a'}"
+            )
+        except Exception as exc:
+            failures.append(f"compute_options_analysis: {exc!r}")
+            print(f"  FAIL  options analysis: {exc}")
+        finally:
+            conn.close()
+    print()
+
+    if args.calibration:
+        print("Calibration (Phase 8a.5 deliverable):")
+        if chain is not None:
+            iv_value = None
+            try:
+                iv_value = iv_rank("NVDA")
+            except Exception as exc:
+                print(f"  SKIP  iv_rank NVDA: {exc}")
+            if iv_value is not None:
+                ok = 0.0 <= float(iv_value) <= 100.0
+                tag = "PASS" if ok else "FAIL"
+                if not ok:
+                    failures.append(f"IV rank out of [0,100]: {iv_value}")
+                print(f"  {tag}  IV rank NVDA in [0,100]: {iv_value}")
+        print()
+
+    if failures:
+        print(f"Overall: FAIL — {len(failures)} check(s) failed")
+        for f in failures:
+            print(f"  - {f}")
+        raise SystemExit(1)
+    print("Overall: PASS")
+
+
+_HANDLERS["smoke-test"] = _cmd_smoke_test  # type: ignore[assignment]
+
+
+def _build_data_client() -> MarketDataClient:
+    """Construct the data client, threading the encrypted credentials store
+    when DATA_CLIENT=schwab (Phase 8a.5)."""
+    if settings.DATA_CLIENT != "schwab":
+        return make_market_data_client(settings)
+    from shared.services.encryption import maybe_get_encryption
+
+    encryption = maybe_get_encryption()
+    conn = get_connection()
+    try:
+        return make_market_data_client(
+            settings, db=conn, encryption=encryption
+        )
+    finally:
+        conn.close()
+
+
 async def _run(args: argparse.Namespace) -> None:
     run_migrations()
-    client = make_market_data_client(settings)
+    client = _build_data_client()
     await _HANDLERS[args.cmd](client, args)
 
 

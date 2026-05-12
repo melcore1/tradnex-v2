@@ -1,17 +1,53 @@
 import asyncio
 import signal
 import sys
+from datetime import UTC, datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-from shared.clients.factory import make_halt_feed, make_market_data_client
+from shared.clients.factory import (
+    DataClientNotConfigured,
+    make_halt_feed,
+    make_market_data_client,
+)
+from shared.clients.market_data import MarketDataClient
 from shared.config import settings
 from shared.db import get_connection, run_migrations
 from shared.events import emit
+from shared.services.encryption import maybe_get_encryption
 
 SERVICE_NAME = "data"
+
+
+def _build_data_client() -> MarketDataClient:
+    """Construct the configured data client, falling back to mock when
+    Schwab credentials aren't ready yet.
+
+    Phase 8a.5: lets the data service stay up while the user completes
+    OAuth via the UI. After connection, restart picks up Schwab.
+    """
+    if settings.DATA_CLIENT != "schwab":
+        return make_market_data_client(settings)
+    encryption = maybe_get_encryption()
+    conn = get_connection()
+    try:
+        return make_market_data_client(
+            settings, db=conn, encryption=encryption
+        )
+    except DataClientNotConfigured as exc:
+        emit(
+            SERVICE_NAME,
+            "warn",
+            "schwab_not_configured_falling_back_to_mock",
+            {"reason": str(exc)[:300]},
+        )
+        from shared.clients.mock_market_data import MockDataClient
+
+        return MockDataClient(seed=settings.MOCK_SEED)
+    finally:
+        conn.close()
 
 
 async def _bootstrap() -> tuple[bool, AsyncIOScheduler | None]:
@@ -19,7 +55,7 @@ async def _bootstrap() -> tuple[bool, AsyncIOScheduler | None]:
     if applied:
         emit(SERVICE_NAME, "info", "migrations_applied", {"files": applied})
 
-    client = make_market_data_client(settings)
+    client = _build_data_client()
     if settings.DATA_CLIENT == "mock":
         from shared.clients.mock_market_data import MockDataClient
 
@@ -112,6 +148,11 @@ async def _bootstrap() -> tuple[bool, AsyncIOScheduler | None]:
         finally:
             conn.close()
 
+    async def _schwab_refresh_job() -> None:
+        from services.data.schwab_refresh_task import schwab_refresh_tick
+
+        await schwab_refresh_tick()
+
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
         _halt_tick,
@@ -119,6 +160,14 @@ async def _bootstrap() -> tuple[bool, AsyncIOScheduler | None]:
         id="halt_monitor",
         replace_existing=True,
     )
+    if settings.DATA_CLIENT == "schwab" and settings.SCHWAB_OAUTH_ENABLED:
+        scheduler.add_job(
+            _schwab_refresh_job,
+            IntervalTrigger(minutes=25),
+            id="schwab_refresh",
+            replace_existing=True,
+            next_run_time=datetime.now(UTC),  # fire immediately on startup
+        )
     # 15:55 ET ≈ 19:55 UTC during DST
     scheduler.add_job(
         _iv_snapshot_job,

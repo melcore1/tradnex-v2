@@ -5,6 +5,7 @@
     python -m services.api.cli revoke-sessions --user-id 1
     python -m services.api.cli show-config
     python -m services.api.cli generate-encryption-key
+    python -m services.api.cli import-schwab-token --file ~/schwab_token.json
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ import asyncio
 import getpass
 import json
 import sys
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from shared.config import settings
@@ -24,7 +27,9 @@ from shared.services.auth import (
     list_users,
     revoke_all_sessions,
 )
+from shared.services.credentials import upsert_credential
 from shared.services.encryption import EncryptionService
+from shared.services.schwab_refresh import REFRESH_TOKEN_LIFETIME_DAYS
 
 
 def _print_json(obj: Any) -> None:
@@ -131,6 +136,89 @@ def _cmd_show_config(args: argparse.Namespace) -> None:
         print(f"  {k:<32} {v}")
 
 
+def _cmd_import_schwab_token(args: argparse.Namespace) -> None:
+    """Import a schwab-py token file into the encrypted DB store.
+
+    Accepts the JSON shape produced by `scripts/schwab_auth.py` (which uses
+    schwab-py's `client_from_login_flow`): a top-level dict containing
+    `creation_timestamp` and a nested `token` object with `access_token`,
+    `refresh_token`, etc.
+
+    Useful for first-time activation when frontend OAuth isn't accessible
+    (TrueNAS bootstrap, broken UI, recovery from a corrupted DB row).
+    """
+    if not settings.ENCRYPTION_KEY:
+        print(
+            "ENCRYPTION_KEY is not configured. Run "
+            "`python -m services.api.cli generate-encryption-key` first.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    path = Path(args.file).expanduser()
+    if not path.exists():
+        print(f"Token file not found: {path}", file=sys.stderr)
+        sys.exit(2)
+
+    try:
+        raw = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        print(f"Token file is not valid JSON: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    token: dict[str, Any] | None = None
+    if isinstance(raw, dict):
+        if "token" in raw and isinstance(raw["token"], dict):
+            token = raw["token"]
+        elif "access_token" in raw and "refresh_token" in raw:
+            token = raw
+
+    if not token or "access_token" not in token or "refresh_token" not in token:
+        print(
+            "Token file missing required keys (access_token, refresh_token). "
+            "Expected shape: {token: {access_token, refresh_token, ...}, "
+            "creation_timestamp: ...} or {access_token, refresh_token, ...}.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    now = datetime.now(UTC)
+    expires_in = int(token.get("expires_in", 1800))
+    expires_at: datetime | None = None
+    if isinstance(token.get("expires_at"), int | float):
+        expires_at = datetime.fromtimestamp(float(token["expires_at"]), tz=UTC)
+    else:
+        expires_at = now + timedelta(seconds=expires_in)
+    refresh_expires = now + timedelta(days=REFRESH_TOKEN_LIFETIME_DAYS)
+
+    encryption = EncryptionService(settings.ENCRYPTION_KEY)
+    conn = get_connection()
+    try:
+        record = upsert_credential(
+            conn,
+            encryption,
+            "schwab_oauth",
+            secrets={
+                "access_token": token["access_token"],
+                "refresh_token": token["refresh_token"],
+                "token_type": token.get("token_type", "Bearer"),
+                "scope": token.get("scope", ""),
+            },
+            expires_at=expires_at,
+            refresh_token_expires_at=refresh_expires,
+            notes=f"Imported from {path.name}",
+        )
+    finally:
+        conn.close()
+
+    if args.json:
+        _print_json(record)
+        return
+    print(f"Imported Schwab OAuth tokens from {path}")
+    print(f"  access_token expires_at:    {expires_at.isoformat()}")
+    print(f"  refresh_token expires_at:   {refresh_expires.isoformat()}")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="services.api.cli")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -160,6 +248,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_gk.add_argument("--json", action="store_true")
 
+    p_ist = sub.add_parser(
+        "import-schwab-token",
+        help="Import a schwab-py token file into the encrypted credentials store",
+    )
+    p_ist.add_argument(
+        "--file",
+        required=True,
+        help="Path to the schwab-py JSON token file (e.g. /data/schwab_token.json)",
+    )
+    p_ist.add_argument("--json", action="store_true")
+
     return parser
 
 
@@ -180,6 +279,9 @@ def main() -> None:
     run_migrations()
     if args.cmd == "show-config":
         _cmd_show_config(args)
+        return
+    if args.cmd == "import-schwab-token":
+        _cmd_import_schwab_token(args)
         return
     asyncio.run(_ASYNC_HANDLERS[args.cmd](args))
 

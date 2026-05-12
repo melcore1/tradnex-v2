@@ -3,6 +3,7 @@ import { apiFetch } from './client'
 export type CredentialType =
   | 'alpaca_paper'
   | 'alpaca_live'
+  | 'schwab_client'
   | 'schwab_oauth'
   | 'finnhub'
   | 'exa'

@@ -28,6 +28,7 @@ from services.api.routers import (
     events,
     positions,
     prompts,
+    schwab_oauth,
     system,
     universe,
     watchlist,
@@ -209,4 +210,7 @@ app.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"]
 app.include_router(events.router, prefix="/api/events", tags=["events"])
 app.include_router(
     credentials.router, prefix="/api/credentials", tags=["credentials"]
+)
+app.include_router(
+    schwab_oauth.router, prefix="/api/schwab/oauth", tags=["schwab_oauth"]
 )
