@@ -88,10 +88,12 @@ def test_verify_jwt_rejects_expired_token() -> None:
     assert verify_jwt(expired, REAL_KEY) is None
 
 
-def test_metadata_lists_only_client_credentials() -> None:
+def test_metadata_lists_both_grants() -> None:
     md = build_metadata("https://scoutv2.meltradingmcp.uk")
-    assert md["grant_types_supported"] == ["client_credentials"]
+    assert "authorization_code" in md["grant_types_supported"]
+    assert "client_credentials" in md["grant_types_supported"]
     assert md["token_endpoint"].endswith("/oauth/token")
+    assert md["authorization_endpoint"].endswith("/authorize")
     assert "client_secret_post" in md["token_endpoint_auth_methods_supported"]
 
 
@@ -145,9 +147,9 @@ def test_token_endpoint_rejects_unsupported_grant(
         resp = client.post(
             "/oauth/token",
             data={
-                "grant_type": "authorization_code",
-                "client_id": "claude",
-                "code": "abc",
+                "grant_type": "password",  # not supported
+                "username": "x",
+                "password": "y",
             },
         )
     assert resp.status_code == 400
@@ -239,3 +241,217 @@ async def test_verifier_rejects_jwt_signed_by_other_key(
 
     verifier = MCPApiKeyVerifier()
     assert await verifier.verify_token(body["access_token"]) is None
+
+
+# ---------- authorization_code grant + PKCE ----------
+
+
+def _pkce_pair() -> tuple[str, str]:
+    """Return (code_verifier, code_challenge) for an S256 PKCE pair."""
+    import base64
+    import hashlib
+    import secrets as _secrets
+
+    verifier = _secrets.token_urlsafe(64)
+    challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
+        .rstrip(b"=")
+        .decode("ascii")
+    )
+    return verifier, challenge
+
+
+def test_authorize_redirects_with_code(db_with_env: sqlite3.Connection) -> None:
+    seed_credential(db_with_env, "mcp_api_key", {"api_key": REAL_KEY})  # type: ignore[arg-type]
+    _verifier, challenge = _pkce_pair()
+    app = _fresh_app()
+    with TestClient(app) as client:
+        resp = client.get(
+            "/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "claude-ai",
+                "redirect_uri": "https://claude.ai/api/mcp/auth_callback",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "state": "xyz",
+                "scope": "analytics:read",
+            },
+            follow_redirects=False,
+        )
+    assert resp.status_code == 302
+    location = resp.headers["location"]
+    assert location.startswith("https://claude.ai/api/mcp/auth_callback?code=")
+    assert "state=xyz" in location
+
+
+def test_authorize_rejects_non_claude_redirect(db_with_env: sqlite3.Connection) -> None:
+    app = _fresh_app()
+    with TestClient(app) as client:
+        resp = client.get(
+            "/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "claude-ai",
+                "redirect_uri": "https://attacker.example.com/steal",
+                "code_challenge": "abc",
+                "code_challenge_method": "S256",
+                "state": "x",
+            },
+            follow_redirects=False,
+        )
+    assert resp.status_code == 400
+    assert "redirect_uri" in resp.json()["error_description"]
+
+
+def test_authorize_rejects_missing_pkce(db_with_env: sqlite3.Connection) -> None:
+    app = _fresh_app()
+    with TestClient(app) as client:
+        resp = client.get(
+            "/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "claude-ai",
+                "redirect_uri": "https://claude.ai/api/mcp/auth_callback",
+                "state": "x",
+            },
+            follow_redirects=False,
+        )
+    # Error redirected back to claude.ai with error= query param
+    assert resp.status_code == 302
+    assert "error=invalid_request" in resp.headers["location"]
+
+
+def test_token_authorization_code_grant_round_trip(
+    db_with_env: sqlite3.Connection,
+) -> None:
+    seed_credential(db_with_env, "mcp_api_key", {"api_key": REAL_KEY})  # type: ignore[arg-type]
+    verifier, challenge = _pkce_pair()
+    app = _fresh_app()
+    with TestClient(app) as client:
+        # Step 1: /authorize → 302 with code
+        authz = client.get(
+            "/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "claude-ai",
+                "redirect_uri": "https://claude.ai/api/mcp/auth_callback",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "state": "abc",
+            },
+            follow_redirects=False,
+        )
+        assert authz.status_code == 302
+        from urllib.parse import parse_qs, urlparse
+
+        qs = parse_qs(urlparse(authz.headers["location"]).query)
+        code = qs["code"][0]
+
+        # Step 2: /oauth/token exchanges code + verifier for JWT
+        token = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "code_verifier": verifier,
+                "client_id": "claude-ai",
+                "redirect_uri": "https://claude.ai/api/mcp/auth_callback",
+            },
+        )
+    assert token.status_code == 200
+    body = token.json()
+    assert body["token_type"] == "Bearer"
+    assert "access_token" in body
+
+
+def test_token_authorization_code_rejects_wrong_verifier(
+    db_with_env: sqlite3.Connection,
+) -> None:
+    seed_credential(db_with_env, "mcp_api_key", {"api_key": REAL_KEY})  # type: ignore[arg-type]
+    _real_verifier, challenge = _pkce_pair()
+    app = _fresh_app()
+    with TestClient(app) as client:
+        authz = client.get(
+            "/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "claude-ai",
+                "redirect_uri": "https://claude.ai/api/mcp/auth_callback",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "state": "x",
+            },
+            follow_redirects=False,
+        )
+        from urllib.parse import parse_qs, urlparse
+
+        code = parse_qs(urlparse(authz.headers["location"]).query)["code"][0]
+        token = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "code_verifier": "wrong_verifier_that_does_not_match",
+                "client_id": "claude-ai",
+            },
+        )
+    assert token.status_code == 400
+    assert token.json()["error"] == "invalid_grant"
+
+
+def test_token_authorization_code_is_single_use(
+    db_with_env: sqlite3.Connection,
+) -> None:
+    seed_credential(db_with_env, "mcp_api_key", {"api_key": REAL_KEY})  # type: ignore[arg-type]
+    verifier, challenge = _pkce_pair()
+    app = _fresh_app()
+    with TestClient(app) as client:
+        authz = client.get(
+            "/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "claude-ai",
+                "redirect_uri": "https://claude.ai/api/mcp/auth_callback",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "state": "x",
+            },
+            follow_redirects=False,
+        )
+        from urllib.parse import parse_qs, urlparse
+
+        code = parse_qs(urlparse(authz.headers["location"]).query)["code"][0]
+        first = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "code_verifier": verifier,
+                "client_id": "claude-ai",
+            },
+        )
+        assert first.status_code == 200
+        # Replay must fail
+        second = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "code_verifier": verifier,
+                "client_id": "claude-ai",
+            },
+        )
+    assert second.status_code == 400
+    assert second.json()["error"] == "invalid_grant"
+
+
+def test_metadata_declares_auth_code_grant(db_with_env: sqlite3.Connection) -> None:
+    app = _fresh_app()
+    with TestClient(app) as client:
+        resp = client.get("/.well-known/oauth-authorization-server")
+    body = resp.json()
+    assert "authorization_code" in body["grant_types_supported"]
+    assert "client_credentials" in body["grant_types_supported"]
+    assert "S256" in body["code_challenge_methods_supported"]
+    assert body["authorization_endpoint"].endswith("/authorize")
