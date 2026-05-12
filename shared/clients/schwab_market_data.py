@@ -122,6 +122,11 @@ class SchwabDataClient(MarketDataClient):
                     token_read_func=_read,
                     token_write_func=_write,
                     asyncio=True,
+                    # We pass raw strings ("equity", sort orders, etc.)
+                    # rather than Market.EQUITY enums into schwab-py.
+                    # Without this flag, get_market_hours("equity") raises
+                    # ValueError('expected type "Market", got type "str"').
+                    enforce_enums=False,
                 )
             except Exception as e:
                 raise SchwabAuthRequired(
@@ -422,15 +427,20 @@ class SchwabDataClient(MarketDataClient):
             # (missing expires_at, bad client_id, expired refresh window,
             # etc.) are debuggable from the events stream instead of just
             # showing "health_check_failed".
-            from shared.events import emit
+            try:
+                from shared.events import emit
 
-            emit(
-                "schwab_data",
-                "error",
-                "health_check_exception",
-                {
-                    "error": str(exc)[:300],
-                    "error_type": type(exc).__name__,
-                },
-            )
+                emit(
+                    "schwab_data",
+                    "error",
+                    "health_check_exception",
+                    {
+                        "error": str(exc)[:300],
+                        "error_type": type(exc).__name__,
+                    },
+                )
+            except Exception:
+                # Best-effort logging — never let a logging failure mask
+                # the underlying health_check result.
+                pass
             return False
