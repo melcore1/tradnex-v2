@@ -817,6 +817,12 @@ export interface paths {
          * Callback
          * @description Receive Schwab's authorization code, exchange for tokens, persist.
          *
+         *     Public endpoint (no `CurrentUser` dep): some browsers drop the session
+         *     cookie on the cross-site navigation back from schwab.com even with
+         *     SameSite=Lax. The state token itself is Fernet-encrypted with our
+         *     master key and carries the user_id, so we use it as the sole identity
+         *     proof here.
+         *
          *     On success, redirects to `/settings/credentials?schwab=connected` so
          *     the UI can show a toast and re-render the card.
          */
@@ -2820,9 +2826,7 @@ export interface operations {
             };
             header?: never;
             path?: never;
-            cookie?: {
-                tradnex_session?: string | null;
-            };
+            cookie?: never;
         };
         requestBody?: never;
         responses: {
