@@ -24,8 +24,13 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from services.mcp.auth import MCPApiKeyVerifier
+from services.mcp.auth import MCPApiKeyVerifier, load_stored_api_key
 from services.mcp.deps import build_data_client
+from services.mcp.oauth_token import (
+    OAuthTokenError,
+    build_metadata,
+    issue_jwt,
+)
 from services.mcp.tools.calendar_check import calendar_check as _calendar_check
 from services.mcp.tools.correlation_check import (
     correlation_check as _correlation_check,
@@ -151,6 +156,116 @@ async def calendar_check(
 async def health(_: Request) -> JSONResponse:
     """Unauthenticated health probe for Docker / Caddy / Cloudflare."""
     return JSONResponse({"status": "ok", "server": "tradnex-mcp"})
+
+
+@mcp.custom_route(  # type: ignore[untyped-decorator]
+    "/.well-known/oauth-authorization-server", methods=["GET"]
+)
+async def oauth_metadata(_: Request) -> JSONResponse:
+    """RFC 8414 authorization-server metadata.
+
+    Claude.ai's Custom Connector beta discovers our token endpoint here when
+    OAuth Client ID/Secret are configured. We declare only the
+    ``client_credentials`` grant since this is a single-user shared-secret
+    deployment.
+    """
+    return JSONResponse(build_metadata(str(_RESOURCE_URL)))
+
+
+@mcp.custom_route("/oauth/token", methods=["POST"])  # type: ignore[untyped-decorator]
+async def oauth_token(request: Request) -> JSONResponse:
+    """OAuth 2.1 ``client_credentials`` grant.
+
+    Accepts either Basic auth or form-body credentials per RFC 6749 §2.3.
+    On success, issues a JWT (HS256, signed with the stored ``mcp_api_key``)
+    that the SDK's bearer middleware accepts on ``/mcp`` requests.
+
+    Any ``client_id`` is accepted; only ``client_secret`` is verified against
+    the stored ``mcp_api_key``.
+    """
+    try:
+        client_id, client_secret = await _extract_client_credentials(request)
+        stored_key = load_stored_api_key()
+        if stored_key is None:
+            raise OAuthTokenError(
+                "server_error",
+                "MCP API key is not configured. Run `python -m services.mcp.cli "
+                "generate-api-key` inside the container before connecting.",
+                status_code=500,
+            )
+        if not _constant_time_eq(client_secret, stored_key):
+            raise OAuthTokenError(
+                "invalid_client",
+                "client_secret does not match the configured mcp_api_key.",
+                status_code=401,
+            )
+
+        body = issue_jwt(stored_key, client_id=client_id)
+        logger.info("issued oauth token for client_id=%s", client_id)
+        return JSONResponse(body)
+    except OAuthTokenError as exc:
+        logger.warning("oauth grant rejected: %s — %s", exc.error, exc.description)
+        return JSONResponse(
+            {"error": exc.error, "error_description": exc.description},
+            status_code=exc.status_code,
+        )
+    except Exception:
+        logger.exception("unexpected error in /oauth/token")
+        return JSONResponse(
+            {"error": "server_error", "error_description": "Internal error."},
+            status_code=500,
+        )
+
+
+async def _extract_client_credentials(request: Request) -> tuple[str, str]:
+    """Extract (client_id, client_secret) from form body or Basic auth.
+
+    Per RFC 6749 §2.3.1 both methods are valid; client_secret_basic and
+    client_secret_post are both declared in our metadata.
+    """
+    form = await request.form()
+    grant_type = str(form.get("grant_type", "")).strip()
+    if grant_type != "client_credentials":
+        raise OAuthTokenError(
+            "unsupported_grant_type",
+            f"Only `client_credentials` is supported (got {grant_type!r}).",
+            status_code=400,
+        )
+
+    body_id = form.get("client_id")
+    body_secret = form.get("client_secret")
+    if isinstance(body_id, str) and isinstance(body_secret, str) and body_secret:
+        return body_id.strip() or "claude-ai", body_secret
+
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Basic "):
+        import base64
+
+        try:
+            decoded = base64.b64decode(auth_header[6:]).decode()
+            client_id, _, client_secret = decoded.partition(":")
+        except Exception as exc:
+            raise OAuthTokenError(
+                "invalid_request", "Malformed Basic credentials.", status_code=400
+            ) from exc
+        if not client_secret:
+            raise OAuthTokenError(
+                "invalid_request", "Basic auth missing client_secret.", status_code=400
+            )
+        return client_id.strip() or "claude-ai", client_secret
+
+    raise OAuthTokenError(
+        "invalid_request",
+        "Missing client credentials. Provide client_id + client_secret in the form body "
+        "or via Basic auth.",
+        status_code=400,
+    )
+
+
+def _constant_time_eq(a: str, b: str) -> bool:
+    import hmac as _hmac
+
+    return _hmac.compare_digest(a, b)
 
 
 def build_app() -> Starlette:

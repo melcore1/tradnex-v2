@@ -668,12 +668,16 @@ Alpaca-backed predecessor.
    ```
    The key is printed once — save it immediately to a password manager.
 
-2. **Configure Claude.ai**: in MCP settings, add the connector:
-   ```
-   URL:           https://scoutv2.meltradingmcp.uk/mcp
-   Auth header:   Authorization: Bearer <YOUR_MCP_API_KEY>
-   Transport:     Streamable HTTP
-   ```
+2. **Configure Claude.ai** (Web UI Custom Connector beta):
+   - URL: `https://scoutv2.meltradingmcp.uk/mcp`
+   - Advanced settings → **OAuth Client ID**: anything (e.g. `claude-ai`)
+   - Advanced settings → **OAuth Client Secret**: the `tnx_…` API key from step 1
+
+   Claude.ai performs an OAuth 2.1 `client_credentials` grant against
+   `/oauth/token`, receives a short-lived JWT, then sends that JWT as
+   `Authorization: Bearer …` for every `/mcp` request. The MCP server
+   accepts both the raw API key (for `curl` testing) and the OAuth-issued
+   JWT.
 
 3. **Verify** end-to-end: from a Claude.ai chat, call
    `quick_check SPY` and confirm it returns Schwab-backed data.
