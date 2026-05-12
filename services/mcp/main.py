@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -44,15 +46,36 @@ from services.mcp.tools.position_check import position_check as _position_check
 from services.mcp.tools.quick_check import quick_check as _quick_check
 from services.mcp.tools.regime_check import regime_check as _regime_check
 from services.mcp.tools.scout import scout as _scout
+from shared.config import settings as _app_settings
 
 logger = logging.getLogger(__name__)
 
 # Resource server URL is used in the SDK's RFC 9728 protected-resource
-# metadata response (`/.well-known/oauth-protected-resource`). For a
-# private LAN deployment with shared-secret bearer auth, the URL just
-# needs to be a valid HTTP(S) URL; clients don't follow it.
-_RESOURCE_URL = AnyHttpUrl("https://scoutv2.meltradingmcp.uk")
-_ISSUER_URL = AnyHttpUrl("https://scoutv2.meltradingmcp.uk")
+# metadata response (`/.well-known/oauth-protected-resource`) and as the
+# expected `Host` header for the SDK's DNS-rebinding protection.
+# Configurable via the `MCP_PUBLIC_URL` env var so deployments under a
+# different hostname don't require a code change.
+_RESOURCE_URL = AnyHttpUrl(_app_settings.MCP_PUBLIC_URL)
+_ISSUER_URL = _RESOURCE_URL
+_RESOURCE_HOST = urlparse(str(_RESOURCE_URL)).hostname or "localhost"
+
+
+def _build_transport_security() -> TransportSecuritySettings:
+    """Allowlist hostnames Claude.ai (and local testing) will send as Host."""
+    return TransportSecuritySettings(
+        allowed_hosts=[
+            _RESOURCE_HOST,
+            "localhost",
+            "127.0.0.1",
+            "localhost:8090",
+            "127.0.0.1:8090",
+        ],
+        allowed_origins=[
+            f"https://{_RESOURCE_HOST}",
+            "https://claude.ai",
+            "https://claude.com",
+        ],
+    )
 
 
 mcp = FastMCP(
@@ -73,6 +96,7 @@ mcp = FastMCP(
         resource_server_url=_RESOURCE_URL,
         required_scopes=["analytics:read"],
     ),
+    transport_security=_build_transport_security(),
 )
 
 

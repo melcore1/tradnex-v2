@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     SCHWAB_TOKEN_PATH: str = "/data/schwab_token.json"
     SCHWAB_OAUTH_ENABLED: bool = True
 
+    # Phase 8.7: MCP server public URL — used both as the OAuth resource /
+    # issuer URL and as the allowed-host value for the SDK's built-in DNS
+    # rebinding protection. Override in .env to deploy under a different
+    # hostname.
+    MCP_PUBLIC_URL: str = "https://scoutv2.meltradingmcp.uk"
+
     FINNHUB_API_KEY: str | None = None
     EXA_API_KEY: str | None = None
     NTFY_TOPIC: str | None = None
