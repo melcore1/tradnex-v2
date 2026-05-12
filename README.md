@@ -645,7 +645,7 @@ scaffolding in 8a (broker integration lands in 8b).
 The `services/mcp/` package is a remote MCP server that exposes the
 TradNex analytics layer as tools consumable by Claude.ai (or any other
 MCP client). Replaces the legacy Scout server at
-`scout.meltradingmcp.uk` with Schwab-backed data instead of the
+`scoutv2.meltradingmcp.uk` with Schwab-backed data instead of the
 Alpaca-backed predecessor.
 
 ### Tools
@@ -670,7 +670,7 @@ Alpaca-backed predecessor.
 
 2. **Configure Claude.ai**: in MCP settings, add the connector:
    ```
-   URL:           https://scout.meltradingmcp.uk/mcp
+   URL:           https://scoutv2.meltradingmcp.uk/mcp
    Auth header:   Authorization: Bearer <YOUR_MCP_API_KEY>
    Transport:     Streamable HTTP
    ```
@@ -706,7 +706,7 @@ Tunnel:
    `cloudflared-infra_default` external network (same pattern as the
    `caddy` service).
 2. In the Cloudflare zero-trust dashboard, update the
-   `scout.meltradingmcp.uk` public hostname on the `truenas-infra`
+   `scoutv2.meltradingmcp.uk` public hostname on the `truenas-infra`
    tunnel to point to `http://tradnex_mcp:8090`.
 3. Pull + restart the stack on Dockge.
 
