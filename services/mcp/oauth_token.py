@@ -1,26 +1,34 @@
-"""Minimal OAuth 2.1 `client_credentials` grant for the MCP server.
+"""Minimal OAuth 2.1 auth surface for the MCP server.
 
-Claude.ai's Web Custom Connector beta UI exposes ``OAuth Client ID`` and
-``OAuth Client Secret`` fields and runs an OAuth 2.1 client_credentials grant
-to obtain an access token, which it then sends as ``Authorization: Bearer
-<token>`` on subsequent ``/mcp`` requests. To make Claude.ai's Web UI work
-with our server, we expose two endpoints:
+Claude.ai's Web Custom Connector beta runs the **authorization code + PKCE**
+flow (per MCP spec 2025-11-25). The Web UI also takes an OAuth Client Secret
+which we use as a *defense-in-depth* check on the ``/token`` exchange. So
+the full surface we expose:
 
 - ``GET /.well-known/oauth-authorization-server``  RFC 8414 metadata.
-- ``POST /oauth/token``  ``grant_type=client_credentials`` token endpoint.
+- ``GET /authorize``  issues an auth code after validating PKCE params.
+- ``POST /oauth/token``  exchanges either:
+    * ``grant_type=authorization_code`` + ``code`` + ``code_verifier``
+      (Claude.ai's Web UI flow), or
+    * ``grant_type=client_credentials`` + ``client_secret`` (direct API
+      callers / curl testing).
 
-We treat the stored ``mcp_api_key`` credential as the static client secret.
-Any ``client_id`` is accepted (single-user, single-secret deployment); only
-the secret is verified. On success, we issue a JWT signed with HMAC-SHA256
-using the same ``mcp_api_key`` as the signing key. ``MCPApiKeyVerifier``
-validates these JWTs alongside raw API keys for backwards compat.
+Any ``client_id`` is accepted (single-user, single-secret deployment). The
+``client_secret`` (for token-endpoint auth) must equal the stored
+``mcp_api_key``. On success, we issue a JWT signed with HMAC-SHA256 using
+the same ``mcp_api_key`` as the signing key. ``MCPApiKeyVerifier`` accepts
+both these JWTs and raw API keys for backwards compat.
 
-Token lifetime is 1 hour. Refresh tokens are NOT issued (Claude.ai re-runs
-the grant when its cached access token expires).
+Auth codes are stored process-local with a 5-minute expiry; single-use. JWT
+lifetime is 1 hour. No refresh tokens (Claude.ai re-runs the grant when its
+cached access token expires).
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import secrets
 import time
 from typing import Any
 
@@ -29,6 +37,13 @@ import jwt
 JWT_ALGORITHM = "HS256"
 JWT_LIFETIME_SECONDS = 3600  # 1 hour
 TOKEN_TYPE = "Bearer"
+
+AUTH_CODE_LIFETIME_SECONDS = 300  # 5 min
+AUTH_CODE_BYTES = 32
+
+# Process-local store for in-flight authorization codes. Single-process
+# deployment, single user; codes expire in 5 min so the dict stays small.
+_auth_codes: dict[str, dict[str, Any]] = {}
 
 
 class OAuthTokenError(Exception):
@@ -94,12 +109,69 @@ def build_metadata(resource_url: str) -> dict[str, Any]:
     base = resource_url.rstrip("/")
     return {
         "issuer": base,
+        "authorization_endpoint": f"{base}/authorize",
         "token_endpoint": f"{base}/oauth/token",
-        "grant_types_supported": ["client_credentials"],
+        "grant_types_supported": ["authorization_code", "client_credentials"],
+        "response_types_supported": ["code"],
+        "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": [
             "client_secret_basic",
             "client_secret_post",
+            "none",  # PKCE-only callers (e.g. some MCP clients)
         ],
-        "response_types_supported": [],  # we don't do auth-code flow
         "scopes_supported": ["analytics:read"],
     }
+
+
+def issue_auth_code(
+    *,
+    client_id: str,
+    redirect_uri: str,
+    code_challenge: str,
+    code_challenge_method: str,
+    scope: str,
+) -> str:
+    """Mint a new auth code; store its PKCE state for later /token exchange."""
+    code = secrets.token_urlsafe(AUTH_CODE_BYTES)
+    _auth_codes[code] = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "code_challenge": code_challenge,
+        "code_challenge_method": code_challenge_method,
+        "scope": scope,
+        "expires_at": int(time.time()) + AUTH_CODE_LIFETIME_SECONDS,
+    }
+    return code
+
+
+def consume_auth_code(code: str, code_verifier: str) -> dict[str, Any] | None:
+    """Validate auth code + PKCE verifier; return stored metadata on success.
+
+    Pops the code from the store on first call — one-time-use semantics.
+    Returns None when the code is unknown, expired, or PKCE check fails.
+    """
+    data = _auth_codes.pop(code, None)
+    if data is None:
+        return None
+    if data["expires_at"] < int(time.time()):
+        return None
+    if data["code_challenge_method"] != "S256":
+        return None
+    verifier_hash = hashlib.sha256(code_verifier.encode("ascii")).digest()
+    expected = (
+        base64.urlsafe_b64encode(verifier_hash).rstrip(b"=").decode("ascii")
+    )
+    if not _consteq(expected, data["code_challenge"]):
+        return None
+    return data
+
+
+def _consteq(a: str, b: str) -> bool:
+    import hmac
+
+    return hmac.compare_digest(a, b)
+
+
+def reset_auth_code_store() -> None:
+    """Test helper: clear the in-memory auth code store."""
+    _auth_codes.clear()

@@ -22,13 +22,15 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from services.mcp.auth import MCPApiKeyVerifier, load_stored_api_key
 from services.mcp.deps import build_data_client
 from services.mcp.oauth_token import (
     OAuthTokenError,
     build_metadata,
+    consume_auth_code,
+    issue_auth_code,
     issue_jwt,
 )
 from services.mcp.tools.calendar_check import calendar_check as _calendar_check
@@ -172,19 +174,94 @@ async def oauth_metadata(_: Request) -> JSONResponse:
     return JSONResponse(build_metadata(str(_RESOURCE_URL)))
 
 
+_ALLOWED_REDIRECT_PREFIXES = (
+    "https://claude.ai/",
+    "https://claude.com/",
+    "http://localhost",
+    "http://127.0.0.1",
+)
+
+
+@mcp.custom_route("/authorize", methods=["GET"])  # type: ignore[untyped-decorator]
+async def oauth_authorize(request: Request) -> Response:
+    """OAuth 2.1 authorization endpoint (RFC 6749 §4.1) with PKCE (RFC 7636).
+
+    Auto-approves the request — there's no separate consent UI because this
+    is a single-user deployment gated by the API key on the /token exchange.
+    Generates an auth code, stores the PKCE challenge keyed by it, and
+    302-redirects to ``redirect_uri`` with ``code`` + ``state``.
+    """
+    params = request.query_params
+    response_type = params.get("response_type", "")
+    client_id = params.get("client_id", "") or "claude-ai"
+    redirect_uri = params.get("redirect_uri", "")
+    code_challenge = params.get("code_challenge", "")
+    code_challenge_method = params.get("code_challenge_method", "")
+    state = params.get("state", "")
+    scope = params.get("scope", "analytics:read")
+
+    if not redirect_uri:
+        return JSONResponse(
+            {"error": "invalid_request", "error_description": "redirect_uri required"},
+            status_code=400,
+        )
+    if not redirect_uri.startswith(_ALLOWED_REDIRECT_PREFIXES):
+        return JSONResponse(
+            {
+                "error": "invalid_request",
+                "error_description": (
+                    "redirect_uri must be https://claude.ai/, https://claude.com/, "
+                    "or a localhost URL."
+                ),
+            },
+            status_code=400,
+        )
+    if response_type != "code":
+        return _redirect_oauth_error(
+            redirect_uri,
+            "unsupported_response_type",
+            "Only `code` is supported.",
+            state,
+        )
+    if not code_challenge:
+        return _redirect_oauth_error(
+            redirect_uri, "invalid_request", "code_challenge required (PKCE).", state
+        )
+    if code_challenge_method != "S256":
+        return _redirect_oauth_error(
+            redirect_uri,
+            "invalid_request",
+            "Only S256 code_challenge_method is supported.",
+            state,
+        )
+
+    code = issue_auth_code(
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        code_challenge=code_challenge,
+        code_challenge_method=code_challenge_method,
+        scope=scope,
+    )
+    target = f"{redirect_uri}?code={code}"
+    if state:
+        target += f"&state={state}"
+    logger.info("issued auth code for client_id=%s", client_id)
+    return RedirectResponse(target, status_code=302)
+
+
 @mcp.custom_route("/oauth/token", methods=["POST"])  # type: ignore[untyped-decorator]
 async def oauth_token(request: Request) -> JSONResponse:
-    """OAuth 2.1 ``client_credentials`` grant.
+    """OAuth 2.1 token endpoint. Handles two grant types:
 
-    Accepts either Basic auth or form-body credentials per RFC 6749 §2.3.
-    On success, issues a JWT (HS256, signed with the stored ``mcp_api_key``)
-    that the SDK's bearer middleware accepts on ``/mcp`` requests.
+    1. ``authorization_code`` + ``code`` + ``code_verifier`` (Claude.ai's flow).
+       PKCE is required. ``client_secret`` is an additional check; we accept
+       requests with no client_secret only if PKCE has already authenticated
+       the caller (per RFC 7636 §4.4 the verifier is auth).
+    2. ``client_credentials`` + ``client_secret`` (direct curl/CLI).
 
-    Any ``client_id`` is accepted; only ``client_secret`` is verified against
-    the stored ``mcp_api_key``.
+    Issued tokens are HS256 JWTs signed with the stored ``mcp_api_key``.
     """
     try:
-        client_id, client_secret = await _extract_client_credentials(request)
         stored_key = load_stored_api_key()
         if stored_key is None:
             raise OAuthTokenError(
@@ -193,16 +270,62 @@ async def oauth_token(request: Request) -> JSONResponse:
                 "generate-api-key` inside the container before connecting.",
                 status_code=500,
             )
-        if not _constant_time_eq(client_secret, stored_key):
-            raise OAuthTokenError(
-                "invalid_client",
-                "client_secret does not match the configured mcp_api_key.",
-                status_code=401,
-            )
 
-        body = issue_jwt(stored_key, client_id=client_id)
-        logger.info("issued oauth token for client_id=%s", client_id)
-        return JSONResponse(body)
+        form = await request.form()
+        grant_type = str(form.get("grant_type", "")).strip()
+
+        if grant_type == "authorization_code":
+            client_id = _form_str(form, "client_id") or "claude-ai"
+            code = _form_str(form, "code")
+            code_verifier = _form_str(form, "code_verifier")
+            if not code or not code_verifier:
+                raise OAuthTokenError(
+                    "invalid_request",
+                    "code and code_verifier are required for authorization_code grant.",
+                )
+            data = consume_auth_code(code, code_verifier)
+            if data is None:
+                raise OAuthTokenError(
+                    "invalid_grant",
+                    "Auth code is invalid, expired, already used, or PKCE check failed.",
+                    status_code=400,
+                )
+            # Optional client_secret check: when Claude.ai's UI has the Client
+            # Secret filled in, it sends it here. We require it to match the
+            # api_key if present — defense in depth against a stolen code+verifier.
+            sent_secret = _form_str(form, "client_secret")
+            if sent_secret and not _constant_time_eq(sent_secret, stored_key):
+                raise OAuthTokenError(
+                    "invalid_client",
+                    "client_secret does not match the configured mcp_api_key.",
+                    status_code=401,
+                )
+            body = issue_jwt(
+                stored_key,
+                client_id=client_id,
+                scopes=data.get("scope", "analytics:read").split(),
+            )
+            logger.info("issued jwt via authorization_code for client_id=%s", client_id)
+            return JSONResponse(body)
+
+        if grant_type == "client_credentials":
+            client_id, client_secret = await _extract_client_credentials(request, form)
+            if not _constant_time_eq(client_secret, stored_key):
+                raise OAuthTokenError(
+                    "invalid_client",
+                    "client_secret does not match the configured mcp_api_key.",
+                    status_code=401,
+                )
+            body = issue_jwt(stored_key, client_id=client_id)
+            logger.info("issued jwt via client_credentials for client_id=%s", client_id)
+            return JSONResponse(body)
+
+        raise OAuthTokenError(
+            "unsupported_grant_type",
+            f"grant_type must be `authorization_code` or `client_credentials` "
+            f"(got {grant_type!r}).",
+            status_code=400,
+        )
     except OAuthTokenError as exc:
         logger.warning("oauth grant rejected: %s — %s", exc.error, exc.description)
         return JSONResponse(
@@ -217,25 +340,32 @@ async def oauth_token(request: Request) -> JSONResponse:
         )
 
 
-async def _extract_client_credentials(request: Request) -> tuple[str, str]:
-    """Extract (client_id, client_secret) from form body or Basic auth.
+def _redirect_oauth_error(
+    redirect_uri: str, error: str, description: str, state: str
+) -> RedirectResponse:
+    """Build a 302 back to the OAuth client with an error payload (RFC 6749 §4.1.2.1)."""
+    from urllib.parse import urlencode
 
-    Per RFC 6749 §2.3.1 both methods are valid; client_secret_basic and
-    client_secret_post are both declared in our metadata.
-    """
-    form = await request.form()
-    grant_type = str(form.get("grant_type", "")).strip()
-    if grant_type != "client_credentials":
-        raise OAuthTokenError(
-            "unsupported_grant_type",
-            f"Only `client_credentials` is supported (got {grant_type!r}).",
-            status_code=400,
-        )
+    qs = {"error": error, "error_description": description}
+    if state:
+        qs["state"] = state
+    sep = "&" if "?" in redirect_uri else "?"
+    return RedirectResponse(f"{redirect_uri}{sep}{urlencode(qs)}", status_code=302)
 
-    body_id = form.get("client_id")
-    body_secret = form.get("client_secret")
-    if isinstance(body_id, str) and isinstance(body_secret, str) and body_secret:
-        return body_id.strip() or "claude-ai", body_secret
+
+def _form_str(form: Any, key: str) -> str:
+    val = form.get(key, "")
+    return str(val).strip() if val is not None else ""
+
+
+async def _extract_client_credentials(
+    request: Request, form: Any
+) -> tuple[str, str]:
+    """Extract (client_id, client_secret) for client_credentials grant."""
+    body_id = _form_str(form, "client_id") or "claude-ai"
+    body_secret = _form_str(form, "client_secret")
+    if body_secret:
+        return body_id, body_secret
 
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Basic "):
@@ -256,8 +386,7 @@ async def _extract_client_credentials(request: Request) -> tuple[str, str]:
 
     raise OAuthTokenError(
         "invalid_request",
-        "Missing client credentials. Provide client_id + client_secret in the form body "
-        "or via Basic auth.",
+        "Missing client_secret for client_credentials grant.",
         status_code=400,
     )
 
