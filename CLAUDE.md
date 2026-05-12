@@ -80,11 +80,12 @@ with a broker.
 | 6  | FastAPI service | `606102b` | 11 routers, session auth, SSE, runtime toggles |
 | 7  | Next.js frontend | `35ab641` + `5c9184e` | App Router UI, Caddy proxy, mobile-first, vitest |
 | 8a | Encryption + credentials | `e7bda5a` | Fernet store, env→DB migration, /settings/credentials UI |
-| 8a.5 | Schwab OAuth activation | *pending* | In-app OAuth (auth-start/callback/refresh/disconnect), 25-min auto-refresh task, schwab_client/schwab_oauth credential split, tokens_provider in SchwabDataClient, `/api/system/data-status`, `import-schwab-token` + `smoke-test` CLIs, interactive 4-state Schwab card |
+| 8a.5 | Schwab OAuth activation | `108e14e` | In-app OAuth (auth-start/callback/refresh/disconnect), 25-min auto-refresh task, schwab_client/schwab_oauth credential split, tokens_provider in SchwabDataClient, `/api/system/data-status`, `import-schwab-token` + `smoke-test` CLIs, interactive 4-state Schwab card |
+| 8.7 | TradNex MCP server | *pending* | Replaces Scout at `scout.meltradingmcp.uk`. New `services/mcp/` Streamable-HTTP MCP server wrapping `shared/analytics/`; 7 tools (`quick_check`, `scout`, `market_overview`, `regime_check`, `correlation_check`, `position_check`, `calendar_check`); Bearer-token auth via new `mcp_api_key` credential; `services.mcp.cli` for key generate/rotate/revoke/test |
 | 8b | *not started* | — | Broker abstraction, Alpaca paper, execution service, fill poller |
 | 8c | *not started* | — | V_LIVE vetoes, live mode UI (Schwab OAuth already shipped in 8a.5) |
 
-Current totals after 8a.5: **~640 backend tests, 36 frontend tests**.
+Current totals after 8.7: **~705 backend tests, 36 frontend tests**.
 
 ---
 
@@ -402,6 +403,36 @@ These all happened during development. Don't repeat them.
   `schwab_oauth` holds access+refresh tokens (rotated by the auto-refresh
   task). Disconnect removes `schwab_oauth` only — Client ID/Secret
   persist so reconnecting just needs one more OAuth handshake.
+
+### MCP Server (Phase 8.7)
+
+- **`FastMCP.streamable_http_app()` returns a complete Starlette app**
+  with the session manager lifespan and custom `/health` route already
+  attached. Don't try to wrap it in another Starlette — the inner
+  lifespan won't fire and Claude.ai will see "session not initialized"
+  responses. Just use it as the ASGI app directly under uvicorn.
+- **`session_manager.run()` is idempotent-disallowed**. Tests that build
+  the app twice (e.g. multiple `TestClient(app)` contexts) must reload
+  `services.mcp.main` between them, otherwise the second `lifespan` raises
+  `RuntimeError: .run() can only be called once per instance.`
+- **Endpoint is `/mcp`, not `/sse`**. Spec 2025-03-26 deprecated HTTP+SSE
+  in favor of Streamable HTTP. Claude.ai connectors default to `/mcp`. If
+  Claude.ai exhibits the current CallToolRequest regression, add an SSE
+  fallback as a separate sub-app — but cleanly, not by nesting
+  streamable_http_app inside another Starlette.
+- **Tools take `client`/`db` as positional injection**, not from FastMCP
+  context. The SDK's tool decorator passes only the JSON-RPC params as
+  args; we resolve the data client + DB connection inside the wrapper
+  using `build_data_client()` + `db_session()`. Keeps the tool functions
+  testable without mocking the SDK.
+- **Single API key, single user**. The `mcp_api_key` credential is one
+  row in `credentials`. Rotation replaces it; revocation deletes it.
+  The verifier uses `hmac.compare_digest` for constant-time comparison
+  to dodge timing attacks.
+- **No process-wide state across tools**. Every tool opens a fresh
+  sqlite3 connection (SQLite WAL handles concurrent readers). Tests use
+  `reset_modules_for_test_db` to get a tmp DB per case; production uses
+  the same shared `/data/tradnex.db` as every other TradNex service.
 
 ### Process
 

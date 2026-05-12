@@ -68,7 +68,7 @@ class FullContextResponse(BaseModel):
 # ---- Credentials (Phase 8a) ----
 
 # Allowed credential_type values must mirror the CHECK constraint in
-# `migrations/0010_credentials.sql` (extended by 0011) and the
+# `migrations/0010_credentials.sql` (extended by 0011 + 0012) and the
 # CredentialType literal in `shared/services/credentials.py`.
 CredentialTypeLiteral = Literal[
     "alpaca_paper",
@@ -77,6 +77,7 @@ CredentialTypeLiteral = Literal[
     "schwab_oauth",
     "finnhub",
     "exa",
+    "mcp_api_key",
 ]
 
 
