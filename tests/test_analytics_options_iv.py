@@ -5,7 +5,14 @@ from decimal import Decimal
 
 import pytest
 
-from shared.analytics import iv_percentile, iv_rank, skew, term_structure, vrp
+from shared.analytics import (
+    compute_options_analysis,
+    iv_percentile,
+    iv_rank,
+    skew,
+    term_structure,
+    vrp,
+)
 from shared.analytics.volatility import GARCHResult
 from shared.schemas.market import OptionContract, OptionsChain
 
@@ -228,3 +235,98 @@ def test_vrp_cheap_when_iv_below_realized() -> None:
     garch = _make_garch(annualized=0.30)  # IV - realized = -0.10
     result = vrp(chain, garch)
     assert result.regime == "cheap"
+
+
+def _atm_contract(
+    strike: Decimal,
+    dte: int,
+    iv: Decimal,
+    *,
+    contract_type: str = "call",
+) -> OptionContract:
+    """ATM contract with sensible Greeks for a 100-spot chain."""
+    is_call = contract_type == "call"
+    return OptionContract(
+        symbol=f"TEST_{contract_type[0].upper()}{strike}_{dte}",
+        underlying="TEST",
+        underlying_spot=Decimal("100"),
+        expiration=datetime.now(UTC).date() + timedelta(days=dte),
+        dte=dte,
+        strike=strike,
+        contract_type=contract_type,  # type: ignore[arg-type]
+        bid=Decimal("1"),
+        ask=Decimal("1.05"),
+        last=Decimal("1.02"),
+        volume=100,
+        open_interest=500,
+        iv=iv,
+        delta=Decimal("0.50") if is_call else Decimal("-0.50"),
+        gamma=Decimal("0.02"),
+        theta=Decimal("-0.02"),
+        vega=Decimal("0.10"),
+        rho=Decimal("0.01") if is_call else Decimal("-0.01"),
+    )
+
+
+def test_compute_options_analysis_prefers_30dte_iv_over_1dte(db_conn) -> None:
+    """Regression: after-hours scout pulled max_dte=14 chains where the closest
+    ATM call was 1-DTE with annualized IV >>1. That broke IV rank/term_structure
+    and zeroed expected_move. Fix: prefer 21-45 DTE for current_iv."""
+    _seed_iv_history(db_conn, "TEST", [0.30, 0.40, 0.50, 0.60, 0.70, 0.80] * 10)
+    # ATM strike = 100 (= spot). The 1-DTE row has a degenerate annualized IV
+    # of 5.0 (500%); the 30-DTE row has a normal-range IV of 0.32.
+    chain = OptionsChain(
+        underlying="TEST",
+        spot_at_fetch=Decimal("100"),
+        contracts=[
+            _atm_contract(Decimal("100"), 1, Decimal("5.0")),
+            _atm_contract(Decimal("100"), 1, Decimal("4.8"), contract_type="put"),
+            _atm_contract(Decimal("100"), 30, Decimal("0.32")),
+            _atm_contract(Decimal("100"), 30, Decimal("0.30"), contract_type="put"),
+        ],
+        timestamp=datetime.now(UTC),
+    )
+    result = compute_options_analysis(chain, db_conn)
+    assert result.iv_rank.current_iv == Decimal("0.32")
+    # Sanity: rank should be a real value, not pegged at 100 by the 5.0 outlier.
+    assert result.iv_rank.rank is not None
+    assert float(result.iv_rank.rank) < 100.0
+
+
+def test_compute_options_analysis_skips_zero_dte(db_conn) -> None:
+    """Skips the unusable 0-DTE annualized IV in favor of the 30-DTE row."""
+    _seed_iv_history(db_conn, "TEST", [0.30, 0.40, 0.50, 0.60, 0.70, 0.80] * 10)
+    chain = OptionsChain(
+        underlying="TEST",
+        spot_at_fetch=Decimal("100"),
+        contracts=[
+            _atm_contract(Decimal("100"), 0, Decimal("9.9")),
+            _atm_contract(Decimal("100"), 0, Decimal("9.8"), contract_type="put"),
+            _atm_contract(Decimal("100"), 30, Decimal("0.35")),
+            _atm_contract(Decimal("100"), 30, Decimal("0.34"), contract_type="put"),
+        ],
+        timestamp=datetime.now(UTC),
+    )
+    result = compute_options_analysis(chain, db_conn)
+    assert result.iv_rank.current_iv == Decimal("0.35")
+
+
+def test_compute_options_analysis_falls_back_when_no_long_dte(db_conn) -> None:
+    """Last-resort: when no ATM call has DTE > 14, fall back to the original
+    behaviour (lowest DTE > 0) so analysis still runs rather than crashing."""
+    _seed_iv_history(db_conn, "TEST", [0.30, 0.40, 0.50, 0.60, 0.70, 0.80] * 10)
+    chain = OptionsChain(
+        underlying="TEST",
+        spot_at_fetch=Decimal("100"),
+        contracts=[
+            _atm_contract(Decimal("100"), 1, Decimal("5.0")),
+            _atm_contract(Decimal("100"), 1, Decimal("4.9"), contract_type="put"),
+            _atm_contract(Decimal("100"), 7, Decimal("1.2")),
+            _atm_contract(Decimal("100"), 7, Decimal("1.1"), contract_type="put"),
+        ],
+        timestamp=datetime.now(UTC),
+    )
+    # Sanity: it doesn't crash and picks a contract from the chain. The exact
+    # choice is best-effort because every row here is degenerate.
+    result = compute_options_analysis(chain, db_conn)
+    assert result.iv_rank.current_iv in {Decimal("5.0"), Decimal("1.2")}

@@ -48,7 +48,7 @@ from shared.analytics.options.pain import (
 )
 from shared.analytics.options.zero_dte import ZeroDTEResult, zero_dte_analysis
 from shared.analytics.volatility import GARCHResult
-from shared.schemas.market import OptionsChain
+from shared.schemas.market import OptionContract, OptionsChain
 
 
 class FullOptionsAnalysis(BaseModel):
@@ -105,6 +105,36 @@ class FullOptionsAnalysis(BaseModel):
         return ", ".join(parts)
 
 
+def _select_current_iv_contract(
+    chain: OptionsChain, atm_strike: Decimal
+) -> OptionContract:
+    """Pick the ATM call whose DTE is in [21, 45] for stable IV-rank input.
+
+    Falls back through progressively broader windows when the preferred range
+    is empty (common in 0-14 DTE chains pulled by scout)."""
+    calls_at_strike = [
+        c
+        for c in chain.contracts
+        if c.contract_type == "call" and c.strike == atm_strike
+    ]
+    # Standard window: 21-45 DTE is the industry convention (tastytrade, IBKR) for
+    # the "current IV" series stored in daily_iv_snapshots.atm_iv. Picking outside
+    # this window (e.g. a 1-DTE row whose annualized IV is 5.0+) breaks IV rank,
+    # term-structure scale, and expected-move comparisons against history.
+    preferred = [c for c in calls_at_strike if 21 <= c.dte <= 45]
+    if preferred:
+        return min(preferred, key=lambda c: abs(c.dte - 30))
+    # Widen: anything > 14 DTE (skip the 0-DTE / 1-DTE rows whose IV is unusable)
+    mid = [c for c in calls_at_strike if c.dte > 14]
+    if mid:
+        return min(mid, key=lambda c: abs(c.dte - 30))
+    # Last resort: existing behaviour (anything > 0 DTE)
+    fallback = [c for c in calls_at_strike if c.dte > 0]
+    if fallback:
+        return min(fallback, key=lambda c: c.dte)
+    return chain.contracts[0]
+
+
 def compute_options_analysis(
     chain: OptionsChain,
     conn: sqlite3.Connection,
@@ -119,16 +149,7 @@ def compute_options_analysis(
 
     # ATM front-month contract for second-order Greeks demo
     atm_strike = min({c.strike for c in chain.contracts}, key=lambda s: abs(s - spot))
-    atm_call = next(
-        (
-            c
-            for c in chain.contracts
-            if c.contract_type == "call"
-            and c.strike == atm_strike
-            and c.dte > 0
-        ),
-        chain.contracts[0],
-    )
+    atm_call = _select_current_iv_contract(chain, atm_strike)
     second_order = second_order_greeks(atm_call, spot=spot)
     nc = net_chain_greeks(chain)
 
