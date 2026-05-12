@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import time as _time
 from collections.abc import Callable
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -76,6 +76,35 @@ def _decimal(value: float | int | str | None, default: str = "0") -> Decimal:
     if value is None:
         return Decimal(default)
     return Decimal(str(value))
+
+
+def _parse_expiration_date(value: Any) -> date:
+    """Parse Schwab's option ``expirationDate`` field.
+
+    The current Schwab Trader API returns this as an ISO-format string
+    (e.g. ``"2026-05-04T20:00:00.000+00:00"`` or ``"2026-05-04"``), but the
+    legacy TDA shape was an int milliseconds-since-epoch. Accept both so the
+    client survives Schwab schema drift, and fall back to ``date.min`` for
+    null/zero values (caller's DTE filter will drop those rows).
+    """
+    if value is None or value == 0 or value == "":
+        return date.min
+    if isinstance(value, str):
+        try:
+            normalized = value.replace("Z", "+00:00")
+            return datetime.fromisoformat(normalized).date()
+        except ValueError:
+            try:
+                return date.fromisoformat(value[:10])
+            except ValueError:
+                return date.min
+    if isinstance(value, int | float):
+        # Legacy TDA shape: milliseconds since epoch.
+        try:
+            return datetime.fromtimestamp(value / 1000, tz=UTC).date()
+        except (OverflowError, OSError, ValueError):
+            return date.min
+    return date.min
 
 
 class SchwabDataClient(MarketDataClient):
@@ -256,15 +285,14 @@ class SchwabDataClient(MarketDataClient):
         # Schwab returns IV as a percentage (e.g. 32.0 means 32%); convert to decimal.
         raw_iv = contract_data.get("volatility") or 0.0
         iv_decimal = Decimal(str(raw_iv)) / Decimal("100")
-        exp_ms = contract_data.get("expirationDate", 0)
-        exp_date = datetime.fromtimestamp(exp_ms / 1000, tz=UTC).date()
+        exp_date = _parse_expiration_date(contract_data.get("expirationDate"))
         return OptionContract(
-            symbol=contract_data["symbol"].strip(),
+            symbol=contract_data.get("symbol", "").strip(),
             underlying=underlying,
             underlying_spot=underlying_spot,
             expiration=exp_date,
-            dte=int(contract_data.get("daysToExpiration", 0)),
-            strike=_decimal(contract_data["strikePrice"]),
+            dte=int(contract_data.get("daysToExpiration") or 0),
+            strike=_decimal(contract_data.get("strikePrice", 0)),
             contract_type=contract_type,
             bid=_decimal(contract_data.get("bid", 0)),
             ask=_decimal(contract_data.get("ask", 0)),
@@ -347,7 +375,7 @@ class SchwabDataClient(MarketDataClient):
         sec = detail.get("securitiesAccount", detail)
         balances = sec.get("currentBalances", {})
         is_margin = sec.get("type", "").upper() == "MARGIN"
-        day_trades_remaining = int(sec.get("roundTrips", 0))
+        day_trades_remaining = int(sec.get("roundTrips") or 0)
         return AccountState(
             account_id=account_id,
             buying_power=_decimal(balances.get("buyingPower", 0)),
