@@ -26,7 +26,10 @@ async def test_valid_token_returns_access_token(db_with_env: object) -> None:
     verifier = MCPApiKeyVerifier()
     result = await verifier.verify_token("tnx_valid_token")
     assert result is not None
-    assert result.client_id == "tradnex-mcp"
+    # OAuth client_credentials grant tags JWT-issued tokens with the
+    # caller's client_id; raw-API-key callers (CLI / direct API) get a
+    # distinct identifier so the events log can tell them apart.
+    assert result.client_id == "tradnex-mcp-direct"
     assert "analytics:read" in result.scopes
 
 

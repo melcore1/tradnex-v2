@@ -1,11 +1,17 @@
 """MCP server authentication.
 
-Single shared Bearer token, persisted in the encrypted credentials store
-under ``credential_type='mcp_api_key'``. The SDK's ``TokenVerifier`` interface
-takes the token string and returns an ``AccessToken`` (or None to reject).
+Two accepted credentials for the ``/mcp`` JSON-RPC endpoint:
 
-We compare with :func:`hmac.compare_digest` to keep the check constant-time
-and avoid leaking the stored key via timing.
+1. **Raw API key** — the ``tnx_…`` string from
+   ``python -m services.mcp.cli generate-api-key``. Compared in constant
+   time via :func:`hmac.compare_digest`.
+2. **OAuth-issued JWT** — produced by ``POST /oauth/token`` after a
+   successful client_credentials grant. JWT is signed with HMAC-SHA256 using
+   the same stored API key as the signing secret, so verification needs no
+   additional state.
+
+Both paths converge on ``MCPApiKeyVerifier.verify_token`` which the FastMCP
+``RequireAuthMiddleware`` invokes for every ``/mcp`` request.
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ import logging
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 
 from services.mcp.deps import db_session, get_encryption_or_raise
+from services.mcp.oauth_token import verify_jwt
 from shared.services.credentials import get_credential_secrets
 
 logger = logging.getLogger(__name__)
@@ -33,16 +40,32 @@ class MCPApiKeyVerifier(TokenVerifier):
             logger.exception("Failed to load mcp_api_key from credentials store")
             return None
         if stored_key is None:
-            # No key configured yet — server rejects all requests until the
-            # operator runs `python -m services.mcp.cli generate-api-key`.
             return None
-        if not hmac.compare_digest(token, stored_key):
+
+        # Path A — raw API key (legacy / CLI testing). Constant-time compare.
+        if hmac.compare_digest(token, stored_key):
+            return AccessToken(
+                token=token,
+                client_id="tradnex-mcp-direct",
+                scopes=["analytics:read"],
+            )
+
+        # Path B — JWT issued by /oauth/token, signed with the stored key.
+        claims = verify_jwt(token, stored_key)
+        if claims is None:
             return None
+        scopes = claims.get("scope", "analytics:read").split()
         return AccessToken(
             token=token,
-            client_id="tradnex-mcp",
-            scopes=["analytics:read"],
+            client_id=str(claims.get("client_id", "tradnex-mcp")),
+            scopes=scopes,
+            expires_at=int(claims.get("exp", 0)) or None,
         )
+
+
+def load_stored_api_key() -> str | None:
+    """Public accessor for the token endpoint to validate client_secret."""
+    return _load_stored_api_key()
 
 
 def _load_stored_api_key() -> str | None:

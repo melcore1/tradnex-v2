@@ -429,6 +429,16 @@ These all happened during development. Don't repeat them.
   row in `credentials`. Rotation replaces it; revocation deletes it.
   The verifier uses `hmac.compare_digest` for constant-time comparison
   to dodge timing attacks.
+- **OAuth 2.1 client_credentials for Claude.ai Web UI**. The Web
+  Custom Connector beta only exposes OAuth Client ID/Secret fields —
+  no Bearer-token field. So the MCP server runs a minimal auth-server
+  at `/oauth/token` accepting `grant_type=client_credentials`, where
+  any `client_id` is accepted and `client_secret` must equal the
+  stored `mcp_api_key`. On success it mints a JWT (HS256, signed with
+  the same `mcp_api_key`) which the verifier validates alongside raw
+  API keys. Discovery via `/.well-known/oauth-authorization-server`.
+  This is *not* full OAuth — no /authorize, no refresh tokens, no
+  user consent — just enough for the Web UI's client_credentials path.
 - **No process-wide state across tools**. Every tool opens a fresh
   sqlite3 connection (SQLite WAL handles concurrent readers). Tests use
   `reset_modules_for_test_db` to get a tmp DB per case; production uses
