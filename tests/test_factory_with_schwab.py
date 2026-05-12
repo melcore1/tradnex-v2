@@ -46,12 +46,25 @@ def test_mock_path_unchanged(conn) -> None:
     assert isinstance(client, MockDataClient)
 
 
-def test_schwab_path_requires_db_and_encryption(conn, monkeypatch) -> None:
+def test_schwab_path_auto_resolves_db_and_encryption(conn, monkeypatch) -> None:
+    """Phase 8a.5 + fix: when called with just settings, factory pulls a
+    fresh connection from shared.db and encryption from maybe_get_encryption.
+    With no schwab_client seeded the call still surfaces a clear error."""
     monkeypatch.setenv("DATA_CLIENT", "schwab")
     from shared import config as cfg
 
     importlib.reload(cfg)
-    with pytest.raises(DataClientNotConfigured, match="db \\+ encryption"):
+    with pytest.raises(DataClientNotConfigured, match="schwab_client"):
+        make_market_data_client(cfg.settings)
+
+
+def test_schwab_path_raises_when_encryption_key_missing(conn, monkeypatch) -> None:
+    monkeypatch.setenv("DATA_CLIENT", "schwab")
+    monkeypatch.setenv("ENCRYPTION_KEY", "")
+    from shared import config as cfg
+
+    importlib.reload(cfg)
+    with pytest.raises(DataClientNotConfigured, match="ENCRYPTION_KEY"):
         make_market_data_client(cfg.settings)
 
 
