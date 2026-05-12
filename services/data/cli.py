@@ -989,18 +989,39 @@ async def _cmd_smoke_test(
 
     if args.calibration:
         print("Calibration (Phase 8a.5 deliverable):")
-        if chain is not None:
-            iv_value = None
-            try:
-                iv_value = iv_rank("NVDA")
-            except Exception as exc:
-                print(f"  SKIP  iv_rank NVDA: {exc}")
-            if iv_value is not None:
-                ok = 0.0 <= float(iv_value) <= 100.0
-                tag = "PASS" if ok else "FAIL"
-                if not ok:
-                    failures.append(f"IV rank out of [0,100]: {iv_value}")
-                print(f"  {tag}  IV rank NVDA in [0,100]: {iv_value}")
+        if chain is not None and chain.contracts:
+            # Use the ATM call's IV as the "current" IV reference.
+            calls = [c for c in chain.contracts if c.contract_type == "call"]
+            atm = (
+                min(calls, key=lambda c: abs(c.strike - chain.spot_at_fetch))
+                if calls
+                else None
+            )
+            if atm is None:
+                print("  SKIP  iv_rank NVDA: no ATM call in chain")
+            else:
+                conn = get_connection()
+                try:
+                    result = iv_rank("NVDA", atm.iv, conn)
+                    if result.rank is None:
+                        print(
+                            f"  SKIP  iv_rank NVDA: insufficient history "
+                            f"({result.data_points} pts < min)"
+                        )
+                    else:
+                        ok = 0 <= float(result.rank) <= 100
+                        tag = "PASS" if ok else "FAIL"
+                        if not ok:
+                            failures.append(
+                                f"IV rank out of [0,100]: {result.rank}"
+                            )
+                        print(
+                            f"  {tag}  IV rank NVDA in [0,100]: {result.rank}"
+                        )
+                except Exception as exc:
+                    print(f"  SKIP  iv_rank NVDA: {exc}")
+                finally:
+                    conn.close()
         print()
 
     if failures:
