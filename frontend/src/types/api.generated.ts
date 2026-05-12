@@ -583,6 +583,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/system/data-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Data Status
+         * @description State of the market-data layer: which client is active and, for
+         *     Schwab, the OAuth token expirations.
+         *
+         *     Phase 8a.5. Reads config + credentials metadata only (no decrypted
+         *     secrets ever leave the DB).
+         */
+        get: operations["data_status_api_system_data_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/system/toggle": {
         parameters: {
             query?: never;
@@ -758,6 +782,97 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/schwab/oauth/auth/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Auth Start
+         * @description Start the Schwab OAuth flow.
+         *
+         *     Reads the user's `schwab_client` (Client ID/Secret) from the encrypted
+         *     store and redirects the browser to Schwab's authorize URL with a
+         *     Fernet-signed state token.
+         */
+        get: operations["auth_start_api_schwab_oauth_auth_start_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/schwab/oauth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Callback
+         * @description Receive Schwab's authorization code, exchange for tokens, persist.
+         *
+         *     On success, redirects to `/settings/credentials?schwab=connected` so
+         *     the UI can show a toast and re-render the card.
+         */
+        get: operations["callback_api_schwab_oauth_callback_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/schwab/oauth/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refresh
+         * @description Manually trigger a token refresh.
+         *
+         *     The auto-refresh task in `services/data` runs every 25 min; this is
+         *     for the "Refresh now" button on the Credentials page.
+         */
+        post: operations["refresh_api_schwab_oauth_refresh_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/schwab/oauth/disconnect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Disconnect
+         * @description Remove the `schwab_oauth` credential. `schwab_client` is preserved
+         *     so reconnecting only requires another OAuth handshake.
+         */
+        delete: operations["disconnect_api_schwab_oauth_disconnect_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -851,7 +966,7 @@ export interface components {
              * Credential Type
              * @enum {string}
              */
-            credential_type: "alpaca_paper" | "alpaca_live" | "schwab_oauth" | "finnhub" | "exa";
+            credential_type: "alpaca_paper" | "alpaca_live" | "schwab_client" | "schwab_oauth" | "finnhub" | "exa";
             /** Is Configured */
             is_configured: boolean;
             /** Expires At */
@@ -889,6 +1004,28 @@ export interface components {
                 [key: string]: unknown;
             }[];
             system_status: components["schemas"]["SystemStatusResponse"];
+        };
+        /**
+         * DataStatusResponse
+         * @description `/api/system/data-status` — live state of the market-data layer.
+         *
+         *     Phase 8a.5. The UI uses this to confirm Schwab is connected, show
+         *     expiration warnings, and trigger reauthentication when the rolling
+         *     refresh window narrows.
+         */
+        DataStatusResponse: {
+            /**
+             * Active Client
+             * @enum {string}
+             */
+            active_client: "mock" | "schwab";
+            /** Is Configured */
+            is_configured: boolean;
+            /** Schwab Oauth Enabled */
+            schwab_oauth_enabled: boolean;
+            schwab_token_status?: components["schemas"]["SchwabTokenStatus"] | null;
+            /** Last Quote Ts */
+            last_quote_ts?: string | null;
         };
         /**
          * FullContextResponse
@@ -1066,12 +1203,43 @@ export interface components {
             /** Notes */
             notes?: string | null;
         };
+        /**
+         * RefreshResponse
+         * @description Manual-refresh API response.
+         */
+        RefreshResponse: {
+            /** Success */
+            success: boolean;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Refresh Token Expires At */
+            refresh_token_expires_at?: string | null;
+            /**
+             * Refresh Token Rotated
+             * @default false
+             */
+            refresh_token_rotated: boolean;
+            /** Message */
+            message: string;
+        };
         /** RejectRequest */
         RejectRequest: {
             /** Notes */
             notes?: string | null;
             /** Reason */
             reason?: string | null;
+        };
+        /**
+         * SchwabTokenStatus
+         * @description Schwab OAuth token expirations exposed to the UI.
+         */
+        SchwabTokenStatus: {
+            /** Access Expires At */
+            access_expires_at?: string | null;
+            /** Refresh Expires At */
+            refresh_expires_at?: string | null;
+            /** Refresh Token Hours Remaining */
+            refresh_token_hours_remaining?: number | null;
         };
         /** SettingsResponse */
         SettingsResponse: {
@@ -2256,6 +2424,37 @@ export interface operations {
             };
         };
     };
+    data_status_api_system_data_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                tradnex_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DataStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     toggle_api_system_toggle_post: {
         parameters: {
             query?: never;
@@ -2486,7 +2685,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                credential_type: "alpaca_paper" | "alpaca_live" | "schwab_oauth" | "finnhub" | "exa";
+                credential_type: "alpaca_paper" | "alpaca_live" | "schwab_client" | "schwab_oauth" | "finnhub" | "exa";
             };
             cookie?: {
                 tradnex_session?: string | null;
@@ -2519,7 +2718,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                credential_type: "alpaca_paper" | "alpaca_live" | "schwab_oauth" | "finnhub" | "exa";
+                credential_type: "alpaca_paper" | "alpaca_live" | "schwab_client" | "schwab_oauth" | "finnhub" | "exa";
             };
             cookie?: {
                 tradnex_session?: string | null;
@@ -2556,8 +2755,133 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                credential_type: "alpaca_paper" | "alpaca_live" | "schwab_oauth" | "finnhub" | "exa";
+                credential_type: "alpaca_paper" | "alpaca_live" | "schwab_client" | "schwab_oauth" | "finnhub" | "exa";
             };
+            cookie?: {
+                tradnex_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    auth_start_api_schwab_oauth_auth_start_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                tradnex_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    callback_api_schwab_oauth_callback_get: {
+        parameters: {
+            query: {
+                code: string;
+                state: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: {
+                tradnex_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    refresh_api_schwab_oauth_refresh_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                tradnex_session?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RefreshResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    disconnect_api_schwab_oauth_disconnect_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
             cookie?: {
                 tradnex_session?: string | null;
             };
