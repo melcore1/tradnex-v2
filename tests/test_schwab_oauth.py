@@ -148,6 +148,41 @@ async def test_callback_exchanges_code_and_persists(setup) -> None:
     assert secrets["refresh_token"] == "new_refresh"
 
 
+async def test_callback_works_without_session_cookie(setup) -> None:
+    """Phase 8a.5 regression: some browsers drop the session cookie on the
+    cross-site navigation back from schwab.com even with SameSite=Lax. The
+    callback must authenticate via the state token alone."""
+    conn, client = setup
+    _seed_client_creds(conn)
+    enc = get_test_encryption()
+
+    user_row = conn.execute("SELECT id FROM users LIMIT 1").fetchone()
+    user_id = user_row["id"]
+    state = make_state_token(user_id=user_id, encryption=enc)
+
+    # Drop every cookie to simulate the cross-site cookie strip.
+    client.cookies.clear()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "no_cookie_access",
+                "refresh_token": "no_cookie_refresh",
+                "expires_in": 1800,
+            },
+        )
+
+    _override_http(client, handler)
+    r = client.get(
+        "/api/schwab/oauth/callback",
+        params={"code": "auth_code", "state": state},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/settings/credentials?schwab=connected"
+
+
 async def test_callback_502_on_schwab_4xx(setup) -> None:
     conn, client = setup
     _seed_client_creds(conn)

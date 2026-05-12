@@ -71,18 +71,24 @@ def make_state_token(
     return encryption.encrypt(payload)
 
 
-def verify_state_token(
+def decode_state_token(
     token: str,
-    expected_user_id: int,
     encryption: EncryptionService,
     *,
     now: float | None = None,
 ) -> StateClaims:
-    """Decrypt the token and verify it matches the current user + isn't stale.
+    """Decrypt the token, validate shape + expiry, return claims.
+
+    Used by the OAuth callback when the user's session cookie isn't
+    available (cross-site navigation from Schwab can drop the cookie even
+    with SameSite=Lax in some browsers). The state token itself proves
+    identity — it's Fernet-encrypted with our master key, so an attacker
+    can't forge or tamper with it. They could only replay one they hold,
+    and the 10-minute exp window plus single-use semantics bound that.
 
     Raises:
         OAuthStateInvalid: when the token is malformed, tampered with,
-            expired, or issued for a different user.
+            or expired.
     """
     try:
         raw = encryption.decrypt(token)
@@ -101,6 +107,28 @@ def verify_state_token(
     current = now if now is not None else time.time()
     if claims.exp < current:
         raise OAuthStateInvalid("State token expired")
+    return claims
+
+
+def verify_state_token(
+    token: str,
+    expected_user_id: int,
+    encryption: EncryptionService,
+    *,
+    now: float | None = None,
+) -> StateClaims:
+    """Decrypt the token and verify it matches the current user + isn't stale.
+
+    Use when an authenticated session is available (e.g., the /auth/start
+    endpoint). For callbacks where the browser may not send the session
+    cookie, use `decode_state_token` and trust the user_id encoded in the
+    state.
+
+    Raises:
+        OAuthStateInvalid: when the token is malformed, tampered with,
+            expired, or issued for a different user.
+    """
+    claims = decode_state_token(token, encryption, now=now)
     if claims.user_id != expected_user_id:
         raise OAuthStateInvalid(
             "State token user mismatch — was this flow started by another session?"
