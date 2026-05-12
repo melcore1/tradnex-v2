@@ -28,6 +28,11 @@ PUBLIC_PATHS: frozenset[str] = frozenset(
         "/api/docs",
         "/api/redoc",
         "/api/openapi.json",
+        # Phase 8a.5: Schwab redirects the user's browser here from schwab.com.
+        # Some browsers drop the session cookie on cross-site navigation even
+        # with SameSite=Lax, so the handler authenticates via the Fernet-signed
+        # state token instead of a session cookie.
+        "/api/schwab/oauth/callback",
     }
 )
 PUBLIC_PREFIXES: tuple[str, ...] = ("/api/docs",)

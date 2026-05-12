@@ -29,8 +29,8 @@ from pydantic import BaseModel
 from services.api.deps import DB, CurrentUser, Encryption
 from services.api.oauth_state import (
     OAuthStateInvalid,
+    decode_state_token,
     make_state_token,
-    verify_state_token,
 )
 from shared.events import emit
 from shared.services.credentials import (
@@ -128,7 +128,6 @@ async def auth_start(
 
 @router.get("/callback")
 async def callback(
-    user: CurrentUser,
     db: DB,
     encryption: Encryption,
     http: HttpClient,
@@ -137,24 +136,31 @@ async def callback(
 ) -> RedirectResponse:
     """Receive Schwab's authorization code, exchange for tokens, persist.
 
+    Public endpoint (no `CurrentUser` dep): some browsers drop the session
+    cookie on the cross-site navigation back from schwab.com even with
+    SameSite=Lax. The state token itself is Fernet-encrypted with our
+    master key and carries the user_id, so we use it as the sole identity
+    proof here.
+
     On success, redirects to `/settings/credentials?schwab=connected` so
     the UI can show a toast and re-render the card.
     """
     _require_oauth_enabled()
 
     try:
-        verify_state_token(state, expected_user_id=user.id, encryption=encryption)
+        claims = decode_state_token(state, encryption)
     except OAuthStateInvalid as exc:
         emit(
             "schwab_oauth",
             "warn",
             "callback_state_invalid",
-            {"error": str(exc)[:200], "user_id": user.id},
+            {"error": str(exc)[:200]},
         )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"OAuth state verification failed: {exc}",
         ) from exc
+    user_id = claims.user_id
 
     client_secrets = get_credential_secrets(db, encryption, "schwab_client")
     if not client_secrets:
@@ -226,15 +232,15 @@ async def callback(
         },
         expires_at=expires_at,
         refresh_token_expires_at=refresh_expires_at,
-        notes=f"OAuth completed by user_id={user.id}",
-        user_id=user.id,
+        notes=f"OAuth completed by user_id={user_id}",
+        user_id=user_id,
     )
 
     emit(
         "schwab_oauth",
         "info",
         "oauth_completed",
-        {"user_id": user.id, "expires_at": expires_at.isoformat()},
+        {"user_id": user_id, "expires_at": expires_at.isoformat()},
     )
     return RedirectResponse(
         url="/settings/credentials?schwab=connected",
