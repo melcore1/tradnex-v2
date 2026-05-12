@@ -75,24 +75,45 @@ def make_market_data_client(
 ) -> MarketDataClient:
     """Construct the market-data client selected by Settings.DATA_CLIENT.
 
-    Phase 8a.5: when DATA_CLIENT=schwab, both `db` and `encryption` must be
-    supplied so the factory can read `schwab_client` (Client ID/Secret) from
-    the encrypted store and build a `tokens_provider` closure that returns
-    the latest `schwab_oauth` tokens on every Schwab API call.
+    Phase 8a.5: when DATA_CLIENT=schwab, the factory reads `schwab_client`
+    (Client ID/Secret) from the encrypted credentials store and builds a
+    `tokens_provider` closure that returns the latest `schwab_oauth`
+    tokens on every Schwab API call. `db` and `encryption` are
+    auto-resolved from `shared.db.get_connection()` and
+    `shared.services.encryption.maybe_get_encryption()` when not passed,
+    so all existing single-arg callers (scanner, monitor, orchestrator,
+    evaluator, CLIs) keep working.
 
     Raises:
-        DataClientNotConfigured: when DATA_CLIENT=schwab but db/encryption
-            aren't provided, or when `schwab_client` isn't seeded.
+        DataClientNotConfigured: when DATA_CLIENT=schwab but ENCRYPTION_KEY
+            isn't configured, or when the `schwab_client` credential isn't
+            seeded yet.
     """
     match config.DATA_CLIENT:
         case "mock":
             return MockDataClient(seed=config.MOCK_SEED)
         case "schwab":
-            if db is None or encryption is None:
+            from shared.db import get_connection
+            from shared.services.encryption import maybe_get_encryption
+
+            owns_db = db is None
+            if encryption is None:
+                encryption = maybe_get_encryption()
+            if encryption is None:
                 raise DataClientNotConfigured(
-                    "DATA_CLIENT=schwab requires db + encryption (Phase 8a.5)"
+                    "DATA_CLIENT=schwab requires ENCRYPTION_KEY to be "
+                    "configured so the credentials store is readable."
                 )
-            client_secrets = get_credential_secrets(db, encryption, "schwab_client")
+
+            local_db = db if db is not None else get_connection()
+            try:
+                client_secrets = get_credential_secrets(
+                    local_db, encryption, "schwab_client"
+                )
+            finally:
+                if owns_db:
+                    local_db.close()
+
             if (
                 not client_secrets
                 or not client_secrets.get("client_id")
@@ -104,15 +125,16 @@ def make_market_data_client(
                     "enter Client ID and Secret."
                 )
 
+            # Bind a non-None reference so the closure passes mypy strict.
+            encryption_ref = encryption
+
             def _tokens_provider() -> dict[str, Any]:
                 # Open a fresh connection each call so we always see the
                 # latest tokens written by the 25-min refresh task.
-                from shared.db import get_connection
-
                 conn = get_connection()
                 try:
                     tokens = get_credential_secrets(
-                        conn, encryption, "schwab_oauth", use_cache=False
+                        conn, encryption_ref, "schwab_oauth", use_cache=False
                     )
                 finally:
                     conn.close()
