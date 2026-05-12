@@ -7,6 +7,7 @@ export type CredentialType =
   | 'schwab_oauth'
   | 'finnhub'
   | 'exa'
+  | 'mcp_api_key'
 
 export interface CredentialRecord {
   credential_type: CredentialType

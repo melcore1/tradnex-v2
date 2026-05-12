@@ -636,9 +636,79 @@ After migration, leave the `FINNHUB_API_KEY` / `EXA_API_KEY` lines in
 - `PUT /api/credentials/{type}` — upsert; body `{secrets: {...}, notes?}`
 - `DELETE /api/credentials/{type}`
 
-Valid types: `alpaca_paper`, `alpaca_live`, `schwab_oauth`, `finnhub`,
-`exa`. Alpaca paper/live are scaffolding in 8a (broker integration lands
-in 8b). Schwab is gated behind a "Coming soon" card pending API approval.
+Valid types: `alpaca_paper`, `alpaca_live`, `schwab_client`,
+`schwab_oauth`, `finnhub`, `exa`, `mcp_api_key`. Alpaca paper/live are
+scaffolding in 8a (broker integration lands in 8b).
+
+## MCP server (Phase 8.7)
+
+The `services/mcp/` package is a remote MCP server that exposes the
+TradNex analytics layer as tools consumable by Claude.ai (or any other
+MCP client). Replaces the legacy Scout server at
+`scout.meltradingmcp.uk` with Schwab-backed data instead of the
+Alpaca-backed predecessor.
+
+### Tools
+
+| Tool | Purpose |
+|---|---|
+| `quick_check(ticker)` | Lightweight per-ticker snapshot — price, RSI, ATR, support/resistance. Accepts a list (parallel, max 10). |
+| `scout(ticker, days_history=60)` | Full Tier 2 + Tier 3 + regime analysis. List input parallel. |
+| `market_overview(market_type='stocks')` | Top gainers / losers / most active. |
+| `regime_check(ticker)` | Categorical market regime classification. |
+| `correlation_check(ticker_a, ticker_b)` | Pairwise correlation from cached overnight matrix. |
+| `position_check()` | Open positions with current monitor evaluation. Sensitive — auth-gated. |
+| `calendar_check(days_ahead=14, ticker=None)` | Upcoming economic / earnings events. |
+
+### Setup
+
+1. **Generate an API key** (one time):
+   ```bash
+   docker exec -it tradnex_mcp python -m services.mcp.cli generate-api-key
+   ```
+   The key is printed once — save it immediately to a password manager.
+
+2. **Configure Claude.ai**: in MCP settings, add the connector:
+   ```
+   URL:           https://scout.meltradingmcp.uk/mcp
+   Auth header:   Authorization: Bearer <YOUR_MCP_API_KEY>
+   Transport:     Streamable HTTP
+   ```
+
+3. **Verify** end-to-end: from a Claude.ai chat, call
+   `quick_check SPY` and confirm it returns Schwab-backed data.
+
+### Key management
+
+```bash
+# List status (no secret leakage)
+docker exec -it tradnex_mcp python -m services.mcp.cli show-status
+
+# Rotate (generates a new key, invalidates the old one)
+docker exec -it tradnex_mcp python -m services.mcp.cli rotate-api-key
+
+# Revoke (deletes the credential — server returns 401 to all callers)
+docker exec -it tradnex_mcp python -m services.mcp.cli revoke-api-key
+
+# Smoke-test the running container
+docker exec -it tradnex_mcp python -m services.mcp.cli test-connection
+```
+
+### Deployment
+
+The `mcp` service is in the repo's `docker-compose.yml` and runs on
+port `8090` internally. To expose it to Claude.ai through Cloudflare
+Tunnel:
+
+1. In the Dockge stack at
+   `/mnt/.ix-apps/app_mounts/dockge/stacks/tradnex-v2/compose.yaml`,
+   add the `mcp` service block + attach to the
+   `cloudflared-infra_default` external network (same pattern as the
+   `caddy` service).
+2. In the Cloudflare zero-trust dashboard, update the
+   `scout.meltradingmcp.uk` public hostname on the `truenas-infra`
+   tunnel to point to `http://tradnex_mcp:8090`.
+3. Pull + restart the stack on Dockge.
 
 ## Phase status
 
@@ -655,5 +725,7 @@ in 8b). Schwab is gated behind a "Coming soon" card pending API approval.
 - **Phase 6 — FastAPI service (auth + REST + SSE)**: complete
 - **Phase 7 — Next.js dashboard + Caddy reverse proxy**: complete
 - **Phase 8a — encryption + credentials store**: complete
+- **Phase 8a.5 — Schwab OAuth activation**: complete
+- **Phase 8.7 — TradNex MCP server (replaces Scout)**: complete
 - Phase 8b — broker abstraction + Alpaca paper execution: not started
-- Phase 8c — V_LIVE vetoes + live trading mode + Schwab OAuth: not started
+- Phase 8c — V_LIVE vetoes + live trading mode: not started

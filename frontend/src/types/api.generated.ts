@@ -972,7 +972,7 @@ export interface components {
              * Credential Type
              * @enum {string}
              */
-            credential_type: "alpaca_paper" | "alpaca_live" | "schwab_client" | "schwab_oauth" | "finnhub" | "exa";
+            credential_type: "alpaca_paper" | "alpaca_live" | "schwab_client" | "schwab_oauth" | "finnhub" | "exa" | "mcp_api_key";
             /** Is Configured */
             is_configured: boolean;
             /** Expires At */
@@ -2691,7 +2691,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                credential_type: "alpaca_paper" | "alpaca_live" | "schwab_client" | "schwab_oauth" | "finnhub" | "exa";
+                credential_type: "alpaca_paper" | "alpaca_live" | "schwab_client" | "schwab_oauth" | "finnhub" | "exa" | "mcp_api_key";
             };
             cookie?: {
                 tradnex_session?: string | null;
@@ -2724,7 +2724,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                credential_type: "alpaca_paper" | "alpaca_live" | "schwab_client" | "schwab_oauth" | "finnhub" | "exa";
+                credential_type: "alpaca_paper" | "alpaca_live" | "schwab_client" | "schwab_oauth" | "finnhub" | "exa" | "mcp_api_key";
             };
             cookie?: {
                 tradnex_session?: string | null;
@@ -2761,7 +2761,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                credential_type: "alpaca_paper" | "alpaca_live" | "schwab_client" | "schwab_oauth" | "finnhub" | "exa";
+                credential_type: "alpaca_paper" | "alpaca_live" | "schwab_client" | "schwab_oauth" | "finnhub" | "exa" | "mcp_api_key";
             };
             cookie?: {
                 tradnex_session?: string | null;

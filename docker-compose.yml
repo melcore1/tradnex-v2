@@ -73,6 +73,29 @@ services:
     depends_on:
       - data
 
+  mcp:
+    <<: *python-base
+    container_name: tradnex_mcp
+    # Phase 8.7: TradNex MCP server (replaces the legacy Scout server).
+    # Wraps shared/analytics/ as remote MCP tools reachable from Claude.ai.
+    # Authenticated via the mcp_api_key credential — generate via
+    # `docker exec -it tradnex_mcp python -m services.mcp.cli generate-api-key`.
+    command:
+      - uvicorn
+      - services.mcp.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8090"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8090/health',timeout=3).status==200 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      - data
+
   frontend:
     image: ghcr.io/melcore1/tradnex-v2-frontend:${IMAGE_TAG:-latest}
     container_name: tradnex_frontend

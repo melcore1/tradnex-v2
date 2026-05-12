@@ -35,6 +35,7 @@ CredentialType = Literal[
     "schwab_oauth",
     "finnhub",
     "exa",
+    "mcp_api_key",
 ]
 
 VALID_CREDENTIAL_TYPES: tuple[CredentialType, ...] = (
@@ -44,6 +45,7 @@ VALID_CREDENTIAL_TYPES: tuple[CredentialType, ...] = (
     "schwab_oauth",
     "finnhub",
     "exa",
+    "mcp_api_key",
 )
 
 
