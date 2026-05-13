@@ -113,12 +113,12 @@ async def quick_check(ticker: str | list[str]) -> dict[str, Any]:
 
 @mcp.tool()
 async def scout(
-    ticker: str | list[str], days_history: int = 60
+    ticker: str | list[str], days_history: int = 250
 ) -> dict[str, Any]:
     """Full quant analysis — Tier 2 trend/volatility/momentum + Tier 3 options + regime.
 
     Use for fresh ideas or pre-entry due diligence. Slower than quick_check.
-    Maximum 10 tickers per call. `days_history` is 30–500.
+    Maximum 10 tickers per call. `days_history` is 60–500 (must cover SMA-200).
     """
     client = build_data_client()
     return await _scout(ticker, days_history, client)
