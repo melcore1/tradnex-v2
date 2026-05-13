@@ -430,6 +430,172 @@ async def test_get_account_state_handles_null_round_trips() -> None:
     assert state.pdt_count_remaining == 3
 
 
+SAMPLE_MOVERS_RESPONSE_VOLUME = {
+    "screeners": [
+        {
+            "symbol": "NVDA",
+            "description": "NVIDIA Corp",
+            "lastPrice": 950.25,
+            "netChange": 12.50,
+            "netPercentChange": 1.33,
+            "volume": 75_000_000,
+            "totalVolume": 3_277_188_666,  # index aggregate, broadcast across rows
+            "direction": "up",
+            "trades": 500_000,
+            "marketShare": 0.022,
+        },
+        {
+            "symbol": "AAPL",
+            "description": "Apple Inc",
+            "lastPrice": 230.10,
+            "netChange": -1.20,
+            "netPercentChange": -0.52,
+            "volume": 50_000_000,
+            "totalVolume": 3_277_188_666,
+            "direction": "down",
+            "trades": 350_000,
+            "marketShare": 0.015,
+        },
+    ]
+}
+
+SAMPLE_MOVERS_RESPONSE_GAINERS = {
+    "screeners": [
+        {
+            "symbol": "SMCI",
+            "description": "Super Micro",
+            "lastPrice": 800.00,
+            "netPercentChange": 8.50,
+            "volume": 20_000_000,
+            "totalVolume": 3_277_188_666,
+        },
+    ]
+}
+
+SAMPLE_MOVERS_RESPONSE_LOSERS = {
+    "screeners": [
+        {
+            "symbol": "INTC",
+            "description": "Intel Corp",
+            "lastPrice": 22.10,
+            "netPercentChange": -5.30,
+            "volume": 80_000_000,
+            "totalVolume": 3_277_188_666,
+        },
+    ]
+}
+
+
+async def test_get_movers_invokes_three_distinct_sort_orders() -> None:
+    """Regression: each of the three mover categories MUST invoke the
+    underlying Schwab API with a distinct ``sort_order`` argument. Earlier
+    production data showed identical lists across most_active / gainers /
+    losers, which would surface here as repeated kwargs."""
+
+    def _per_sort(*args: Any, **kwargs: Any) -> Any:
+        so = kwargs.get("sort_order")
+        if so == "PERCENT_CHANGE_UP":
+            return _make_response(200, SAMPLE_MOVERS_RESPONSE_GAINERS)
+        if so == "PERCENT_CHANGE_DOWN":
+            return _make_response(200, SAMPLE_MOVERS_RESPONSE_LOSERS)
+        return _make_response(200, SAMPLE_MOVERS_RESPONSE_VOLUME)
+
+    mock = AsyncMock()
+    mock.get_movers = AsyncMock(side_effect=_per_sort)
+    client = _client_with(mock)
+
+    movers = await client.get_movers()
+
+    # Three calls, one per category, with three distinct sort_order values.
+    assert mock.get_movers.call_count == 3
+    sort_orders_passed = [
+        call.kwargs.get("sort_order") for call in mock.get_movers.call_args_list
+    ]
+    assert set(sort_orders_passed) == {
+        "VOLUME",
+        "PERCENT_CHANGE_UP",
+        "PERCENT_CHANGE_DOWN",
+    }, f"Each category must use a distinct sort_order, got {sort_orders_passed}"
+
+    # And each call should hit the $SPX index with frequency=10.
+    for call in mock.get_movers.call_args_list:
+        assert call.args == ("$SPX",)
+        assert call.kwargs.get("frequency") == 10
+
+    # The categories should map to disjoint ticker sets given disjoint responses.
+    assert {m.ticker for m in movers.most_active} == {"NVDA", "AAPL"}
+    assert {m.ticker for m in movers.top_gainers} == {"SMCI"}
+    assert {m.ticker for m in movers.top_losers} == {"INTC"}
+
+
+async def test_get_movers_uses_per_symbol_volume_not_index_aggregate() -> None:
+    """Regression: Schwab Screener rows include both ``volume`` (per-symbol)
+    and ``totalVolume`` (index aggregate broadcast to every row). Reading
+    ``totalVolume`` made every mover show the same ~3.3B value in production
+    output. The mapping must use ``volume``.
+    """
+    mock = AsyncMock()
+    mock.get_movers = AsyncMock(
+        return_value=_make_response(200, SAMPLE_MOVERS_RESPONSE_VOLUME)
+    )
+    client = _client_with(mock)
+    movers = await client.get_movers()
+
+    # most_active was populated from SAMPLE_MOVERS_RESPONSE_VOLUME — two rows
+    # with distinct per-symbol volumes; the index aggregate (3_277_188_666)
+    # must not leak in anywhere.
+    volumes = {m.volume for m in movers.most_active}
+    assert 3_277_188_666 not in volumes
+    assert volumes == {75_000_000, 50_000_000}
+
+    by_ticker = {m.ticker: m for m in movers.most_active}
+    assert by_ticker["NVDA"].last == Decimal("950.25")
+    assert by_ticker["NVDA"].change_pct == Decimal("1.33")
+    assert by_ticker["NVDA"].volume == 75_000_000
+    assert by_ticker["AAPL"].volume == 50_000_000
+
+
+async def test_get_movers_handles_malformed_rows() -> None:
+    """Defensive: a row missing fields shouldn't crash the whole mapping.
+    Each missing field falls back to a sensible zero/empty default and the
+    surviving rows still come through."""
+    malformed = {
+        "screeners": [
+            {},  # totally empty row
+            {"symbol": "GOOG"},  # only ticker
+            {
+                "symbol": None,  # explicit null symbol
+                "lastPrice": None,
+                "netPercentChange": None,
+                "volume": None,
+            },
+            {  # well-formed row mixed in
+                "symbol": "msft",  # lowercase — should uppercase
+                "lastPrice": 410.50,
+                "netPercentChange": 0.75,
+                "volume": 18_000_000,
+            },
+        ]
+    }
+    mock = AsyncMock()
+    mock.get_movers = AsyncMock(return_value=_make_response(200, malformed))
+    client = _client_with(mock)
+    movers = await client.get_movers()
+
+    # All four rows mapped without raising; defaults fill the blanks.
+    assert len(movers.most_active) == 4
+    by_index = movers.most_active
+    assert by_index[0].ticker == ""
+    assert by_index[0].last == Decimal("0")
+    assert by_index[0].volume == 0
+    assert by_index[1].ticker == "GOOG"
+    assert by_index[2].ticker == ""  # None symbol → empty string
+    assert by_index[2].volume == 0
+    assert by_index[3].ticker == "MSFT"
+    assert by_index[3].last == Decimal("410.5")
+    assert by_index[3].volume == 18_000_000
+
+
 async def test_health_check_returns_false_on_error() -> None:
     mock = AsyncMock()
     mock.get_market_hours = AsyncMock(side_effect=Exception("boom"))
