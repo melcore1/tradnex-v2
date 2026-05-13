@@ -81,11 +81,18 @@ with a broker.
 | 7  | Next.js frontend | `35ab641` + `5c9184e` | App Router UI, Caddy proxy, mobile-first, vitest |
 | 8a | Encryption + credentials | `e7bda5a` | Fernet store, env→DB migration, /settings/credentials UI |
 | 8a.5 | Schwab OAuth activation | `108e14e` | In-app OAuth (auth-start/callback/refresh/disconnect), 25-min auto-refresh task, schwab_client/schwab_oauth credential split, tokens_provider in SchwabDataClient, `/api/system/data-status`, `import-schwab-token` + `smoke-test` CLIs, interactive 4-state Schwab card |
-| 8.7 | TradNex MCP server | *pending* | Replaces Scout at `scout.meltradingmcp.uk`. New `services/mcp/` Streamable-HTTP MCP server wrapping `shared/analytics/`; 7 tools (`quick_check`, `scout`, `market_overview`, `regime_check`, `correlation_check`, `position_check`, `calendar_check`); Bearer-token auth via new `mcp_api_key` credential; `services.mcp.cli` for key generate/rotate/revoke/test |
-| 8b | *not started* | — | Broker abstraction, Alpaca paper, execution service, fill poller |
-| 8c | *not started* | — | V_LIVE vetoes, live mode UI (Schwab OAuth already shipped in 8a.5) |
+| 8.7 | TradNex MCP server | `6b647a6` | Replaces Scout at `scoutv2.meltradingmcp.uk`. New `services/mcp/` Streamable-HTTP MCP server wrapping `shared/analytics/`; 7 tools (`quick_check`, `scout`, `market_overview`, `regime_check`, `correlation_check`, `position_check`, `calendar_check`); Bearer-token auth via new `mcp_api_key` credential; `services.mcp.cli` for key generate/rotate/revoke/test |
+| 8.7a | MCP scoutv2 URL alignment | `eb1e4c9` | Switched hardcoded resource URL from `scout.meltradingmcp.uk` to `scoutv2.meltradingmcp.uk` to match the actual Cloudflare Tunnel route |
+| 8.7b | MCP OAuth client_credentials | `d162745` | Added `/oauth/token` + RFC 8414 discovery so Claude.ai's connector can negotiate auth (was getting 401 silently). Mints HS256 JWTs signed with `mcp_api_key`; verifier accepts both raw API keys and JWTs |
+| 8.7c | MCP OAuth authorization_code + PKCE | `fdc7982` | Claude.ai actually runs auth_code + PKCE (not client_credentials). Added `GET /authorize` with claude.ai/com/localhost redirect-allowlist, S256 PKCE store, one-time-use codes with 5-min expiry, full auth_code branch in `/oauth/token` |
+| 8.7d | MCP host allowlist | `3833e3f` | After OAuth completed, `/mcp` requests still 421'd on "Invalid Host header" from the SDK's DNS-rebinding protection. Added `MCP_PUBLIC_URL` env var driving `TransportSecuritySettings.allowed_hosts` |
+| 8.7e | Data-quality follow-ups (4 PRs) | `8e594cb` `db9cd94` `351981a` `2cdb178` | Schwab quote now requests `fundamental` field (fixes `avg_volume_30d=0`); MCP tools fetch 250 bars by default (fixes `sma200=null`) + widen scout chain DTE to 45; options analytics pick 21-45 DTE ATM call for `current_iv` (fixes IV rank pegged at 100); Schwab movers map per-symbol volume + actually honor sort_order |
+| 8b | *not started* | — | Broker abstraction, Alpaca paper, execution service, fill poller. ABC + AlpacaBroker (alpaca-py) + MockBroker. New `services/execution/` with `place_order` + `fill_poller`. Migration `0013_orders_fills.sql` + `positions.trading_mode` column |
+| 8c | *not started* | — | V_LIVE vetoes (size cap, daily loss circuit breaker, concurrent positions cap, first-N-trades human review) + live mode UI (red `[LIVE]` banner, type-`APPROVE` modal). Requires `live_confirmed=true` in `strategy_configs.settings_json`. Schwab OAuth already shipped in 8a.5 |
 
-Current totals after 8.7: **~705 backend tests, 36 frontend tests**.
+Current totals after 8.7e: **~693 backend tests, 36 frontend tests**.
+
+After 8c the system trades real money on Alpaca live. That's the end goal — paper-traded for weeks first.
 
 ---
 
@@ -429,16 +436,40 @@ These all happened during development. Don't repeat them.
   row in `credentials`. Rotation replaces it; revocation deletes it.
   The verifier uses `hmac.compare_digest` for constant-time comparison
   to dodge timing attacks.
-- **OAuth 2.1 client_credentials for Claude.ai Web UI**. The Web
-  Custom Connector beta only exposes OAuth Client ID/Secret fields —
-  no Bearer-token field. So the MCP server runs a minimal auth-server
-  at `/oauth/token` accepting `grant_type=client_credentials`, where
-  any `client_id` is accepted and `client_secret` must equal the
-  stored `mcp_api_key`. On success it mints a JWT (HS256, signed with
-  the same `mcp_api_key`) which the verifier validates alongside raw
-  API keys. Discovery via `/.well-known/oauth-authorization-server`.
-  This is *not* full OAuth — no /authorize, no refresh tokens, no
-  user consent — just enough for the Web UI's client_credentials path.
+- **Claude.ai connector runs authorization_code + PKCE, NOT
+  client_credentials**. We initially shipped only client_credentials in
+  PR #12 and it failed silently — Claude.ai's UI lists OAuth Client
+  ID/Secret as "optional" but actually does the auth-code dance
+  (`/.well-known/oauth-authorization-server` → `/authorize` with
+  S256 PKCE → `/token` with code+verifier). PR #13 added the
+  authorization endpoint. The server still supports client_credentials
+  for direct/CLI callers. `redirect_uri` is allowlisted to
+  `claude.ai/`, `claude.com/`, `http://localhost*` to prevent open-redirector
+  abuse. Auth codes are process-local, one-time-use, 5-min expiry.
+- **DNS-rebinding protection bites at `/mcp`**. The SDK's
+  `StreamableHTTPSessionManager` wraps `/mcp` (only — custom routes
+  bypass) with a Host header allowlist. Default is empty, so every
+  non-empty Host is rejected with 421 Misdirected Request. Set
+  `MCP_PUBLIC_URL` env var (default `https://scoutv2.meltradingmcp.uk`);
+  the server extracts the hostname and passes it to
+  `TransportSecuritySettings(allowed_hosts=[…])` automatically.
+- **`get_quote` needs `fields=quote,fundamental`**. schwab-py's
+  `client.get_quote(symbol)` defaults `fields=None`, which Schwab
+  interprets as "just the quote block" — the `fundamental` block (and
+  its `avg30DaysVolume` field) is omitted. PR #15 passes both.
+- **MCP tools fetch 250 daily bars by default**. The `sma(bars, 200)`
+  helper returns None when fewer than 200 bars are passed, so any
+  shorter fetch makes the regime classifier blind to the 200-SMA.
+  `quick_check` uses 250 always; `scout`'s `days_history` default is
+  also 250 (was 60 in 8.7, fixed in #16). `scout`'s chain DTE filter
+  is `max_dte=45` for the same reason — narrower ranges produce sparse
+  GEX after-hours.
+- **`current_iv` for IV-rank prefers 21-45 DTE ATM call**. Picking
+  the absolute-closest ATM call from the full chain returns whatever
+  0/1-DTE row is nearest spot — its IV is annualized over near-zero
+  time and reads as 500%+. Historical `daily_iv_snapshots` are 30-day
+  ATM IV in the 30-80% range. PR #17 added a windowed selector that
+  falls back through broader DTE ranges only when 21-45 is empty.
 - **No process-wide state across tools**. Every tool opens a fresh
   sqlite3 connection (SQLite WAL handles concurrent readers). Tests use
   `reset_modules_for_test_db` to get a tmp DB per case; production uses
