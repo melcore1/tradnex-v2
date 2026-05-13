@@ -411,16 +411,28 @@ class SchwabDataClient(MarketDataClient):
         )
 
         def _to_entries(rows: list[dict[str, Any]], category: str) -> list[MoverEntry]:
-            return [
-                MoverEntry(
-                    ticker=r.get("symbol", "").upper(),
-                    last=_decimal(r.get("lastPrice", 0)),
-                    change_pct=_decimal(r.get("netPercentChange", 0)),
-                    volume=int(r.get("totalVolume", 0) or 0),
-                    category=category,  # type: ignore[arg-type]
+            entries: list[MoverEntry] = []
+            for r in rows[:10]:
+                # Schwab Screener fields:
+                #   `volume`      → per-symbol traded volume (what we want)
+                #   `totalVolume` → INDEX aggregate, broadcast identical to every
+                #                   row (e.g. ~3.3B for $SPX). Reading this here
+                #                   caused every mover to show the same volume
+                #                   number in earlier builds.
+                #   `lastPrice`   → most-recent quote
+                #   `netPercentChange` → percent change (the sort dimension)
+                # Fall back gracefully when a field is missing/None so a single
+                # malformed row doesn't crash the whole mapping.
+                entries.append(
+                    MoverEntry(
+                        ticker=str(r.get("symbol") or "").upper(),
+                        last=_decimal(r.get("lastPrice", 0)),
+                        change_pct=_decimal(r.get("netPercentChange", 0)),
+                        volume=int(r.get("volume", 0) or 0),
+                        category=category,  # type: ignore[arg-type]
+                    )
                 )
-                for r in rows[:10]
-            ]
+            return entries
 
         return Movers(
             most_active=_to_entries(active_raw, "most_active"),
