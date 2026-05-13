@@ -66,3 +66,18 @@ async def test_options_block_included_when_chain_present(
     assert options is not None
     assert "gex" in options
     assert "iv_rank" in options
+
+
+async def test_tier4_regime_block_uses_atr_regime_key(
+    db_with_env: object, mock_client: MockDataClient
+) -> None:
+    """Regression: the regime sub-field was `volatility` but read as
+    contradictory next to a composite `overall` label that uses
+    Bollinger-squeeze semantics. Renamed to `atr_regime` so the field's
+    actual source (ATR) is explicit. Old `volatility` key must not appear."""
+    result = await scout("SPY", days_history=250, client=mock_client)
+    regime = result["tier4_regime"]
+    assert "atr_regime" in regime
+    assert "volatility" not in regime
+    # The composite `overall` field must still be present.
+    assert "overall" in regime

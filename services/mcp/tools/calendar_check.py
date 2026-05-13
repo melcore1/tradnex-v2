@@ -32,7 +32,7 @@ async def calendar_check(
             ticker=ticker.upper() if ticker else None,
         )
 
-    return {
+    payload: dict[str, Any] = {
         "events": [
             {
                 "type": ev.event_type,
@@ -49,3 +49,14 @@ async def calendar_check(
         "window_end": end.isoformat(),
         "count": len(events),
     }
+    if not events:
+        # Empty window is almost always "cache not populated yet" rather than
+        # genuinely zero events — a 14-day window typically contains FOMC /
+        # CPI / earnings. Point the caller at the manual backfill.
+        payload["note"] = (
+            "No calendar events in the requested window. If FOMC / CPI / "
+            "earnings should be present, the cache is likely empty — "
+            "backfill with `python -m services.orchestrator.cli "
+            "refresh-calendar` (or wait for the nightly 10:00 UTC job)."
+        )
+    return payload

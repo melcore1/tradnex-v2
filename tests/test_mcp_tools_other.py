@@ -95,6 +95,21 @@ async def test_correlation_check_pair_missing_returns_note(
     assert "note" in result
 
 
+async def test_correlation_check_empty_cache_note_mentions_cli(
+    db_with_env: sqlite3.Connection,
+) -> None:
+    """The empty-cache note must name the exact CLI to run, so a caller
+    (e.g. Claude.ai) can surface an actionable recovery path instead of a
+    generic "cache empty" message."""
+    result = await correlation_check("SPY", "QQQ")
+    assert result["correlation"] is None
+    assert "note" in result
+    # The literal CLI command must be in the note — if this drifts away
+    # from the actual command, the message becomes useless.
+    assert "compute-correlations" in result["note"]
+    assert "universe" in result["note"]
+
+
 async def test_correlation_check_symmetric(db_with_env: sqlite3.Connection) -> None:
     """Caller orders shouldn't matter — code checks both directions."""
     now_ts = datetime.now(UTC).timestamp()
@@ -116,6 +131,18 @@ async def test_calendar_check_empty_window(db_with_env: sqlite3.Connection) -> N
     result = await calendar_check(days_ahead=7, ticker=None)
     assert result["count"] == 0
     assert result["events"] == []
+
+
+async def test_calendar_check_empty_window_note_mentions_cli(
+    db_with_env: sqlite3.Connection,
+) -> None:
+    """Empty result should include a note pointing at the refresh-calendar
+    CLI so a 0-event window doesn't look like genuinely-no-news when the
+    cache is just empty."""
+    result = await calendar_check(days_ahead=14, ticker=None)
+    assert result["count"] == 0
+    assert "note" in result
+    assert "refresh-calendar" in result["note"]
 
 
 async def test_calendar_check_returns_seeded_events(

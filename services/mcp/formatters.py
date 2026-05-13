@@ -7,6 +7,8 @@ LLM happily reads them as numbers.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +24,26 @@ def _s(value: Decimal | float | int | None) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _first_after_dte[T](
+    by_exp: Mapping[date, T],
+    min_dte: int = 14,
+    today: date | None = None,
+) -> T | None:
+    """Return the first dict value whose expiry is > min_dte days from today.
+
+    Used to skip 0-DTE / 1-DTE pinning rows when picking a "front" expiry for
+    max_pain / expected_move. The earliest-DTE entry of a chain is almost
+    always a pinning row whose distance_pct=0 and expected_move_pct=0 — not
+    useful for downstream position analysis. Mirrors the DTE > 14 filter we
+    already apply in term_structure().
+    """
+    cutoff = today or datetime.now(UTC).date()
+    for exp, value in by_exp.items():
+        if (exp - cutoff).days > min_dte:
+            return value
+    return None
 
 
 def format_quote(quote: Quote) -> dict[str, Any]:
@@ -109,8 +131,11 @@ def format_tier2(analysis: FullAnalysis) -> dict[str, Any]:
 
 def format_tier3(options: FullOptionsAnalysis) -> dict[str, Any]:
     """Flatten Tier 3 options analytics."""
-    front_max_pain = next(iter(options.max_pain_per_expiration.values()), None)
-    front_expected_move = next(iter(options.expected_move_per_expiration.values()), None)
+    # Pick the first expiry past the 14-DTE cutoff. The raw front-of-chain
+    # entry is almost always a pinning row (0-DTE / 1-DTE) whose distance_pct
+    # and expected_move_pct are 0 — useless for any position analysis.
+    front_max_pain = _first_after_dte(options.max_pain_per_expiration)
+    front_expected_move = _first_after_dte(options.expected_move_per_expiration)
     return {
         "gex": {
             "net": _s(options.gex.net_gex),
@@ -197,13 +222,21 @@ def format_tier3(options: FullOptionsAnalysis) -> dict[str, Any]:
 
 
 def format_regime(regime: RegimeState | None) -> dict[str, Any]:
-    """Flatten the regime classifier output."""
+    """Flatten the regime classifier output.
+
+    Note: `atr_regime` is ATR-based (absolute price-range magnitude), while
+    the composite `overall` label uses Bollinger-squeeze semantics. They can
+    legitimately disagree (e.g. high ATR but a tight Bollinger squeeze →
+    overall='ranging_low_vol', atr_regime='high'). The previous field name
+    `volatility` read as contradictory; `atr_regime` makes the source
+    explicit. See `description` for the human-readable composite reading.
+    """
     if regime is None:
         return {"overall": "unknown", "confidence": "0", "signals_used": []}
     return {
         "overall": regime.overall,
         "trend": regime.trend_regime,
-        "volatility": regime.volatility_regime,
+        "atr_regime": regime.volatility_regime,
         "gamma": regime.gamma_regime,
         "iv": regime.iv_regime,
         "confidence": _s(regime.confidence),

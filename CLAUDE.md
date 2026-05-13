@@ -259,6 +259,30 @@ Images:
 Both are public. CI builds `linux/amd64`. Pin to a SHA tag for
 deploys you care about, use `:latest` for "always recent."
 
+### Operational backfills (one-time on fresh DB)
+
+Two SQLite caches are populated by nightly cron jobs in the `data`
+service. On a fresh deploy they're empty until the first scheduled run
+(06:00 UTC correlation, 10:00 UTC calendar refresh). Manual backfill:
+
+```bash
+# Correlation matrix for the entire universe (used by correlation_check)
+docker compose exec data python -m services.data.cli compute-correlations --lookback 30
+
+# Economic + earnings calendar from Finnhub (used by calendar_check)
+docker compose exec data python -m services.orchestrator.cli refresh-calendar
+```
+
+(Adjust `data` to whichever compose service has access to
+`/data/tradnex.db` and the network egress.) Verify the schedulers
+actually start in prod logs — the `service_started` event in the
+events table lists `scheduler_jobs` (e.g.
+`["iv_snapshot","correlation_nightly","calendar_refresh_nightly"]`).
+If those job IDs are missing on boot, the nightly jobs never run.
+
+The `correlation_check` and `calendar_check` MCP tools emit a `note`
+field with the exact CLI command when the cache is empty.
+
 ---
 
 ## Standard procedures
@@ -464,12 +488,51 @@ These all happened during development. Don't repeat them.
   also 250 (was 60 in 8.7, fixed in #16). `scout`'s chain DTE filter
   is `max_dte=45` for the same reason — narrower ranges produce sparse
   GEX after-hours.
-- **`current_iv` for IV-rank prefers 21-45 DTE ATM call**. Picking
-  the absolute-closest ATM call from the full chain returns whatever
-  0/1-DTE row is nearest spot — its IV is annualized over near-zero
-  time and reads as 500%+. Historical `daily_iv_snapshots` are 30-day
-  ATM IV in the 30-80% range. PR #17 added a windowed selector that
-  falls back through broader DTE ranges only when 21-45 is empty.
+- **`current_iv` and term_structure ATM-IV use delta-based selection,
+  not strike-based**. Picking the call by nearest-strike-to-spot returns
+  whatever 0/1-DTE row is closest first (PR #17 selector — superseded);
+  even after restricting to DTE > 14, the strike-nearest call can hit
+  Schwab's wonky quoted IV (1.66 = 166% in the live NVDA diagnostic) while
+  the same chain's 25-delta calls return clean IV (~0.47). schwab-py
+  populates `c.delta` per contract; the selector picks `min(calls,
+  key=lambda c: abs(float(c.delta) - 0.5))` — that's how skew, tastytrade,
+  IBKR, ORATS all define ATM. Robust to strike-grid sparsity.
+- **term_structure must filter to calls only**. The previous
+  `min(contracts, key=abs-strike-diff)` iterated calls AND puts — a
+  deep-ITM put at the closest strike has bid-ask-spread-distorted IV
+  that polluted front_month_iv. Filter `c.contract_type == "call"`
+  before the min(). Same applies to anything else that picks ATM IV.
+- **`tier4_regime.atr_regime` and `tier4_regime.overall` can legitimately
+  disagree**. The composite `overall` label uses **Bollinger squeeze**
+  semantics (`bollinger.is_squeezing`); `atr_regime` is **ATR-based**
+  (absolute price-range magnitude). High ATR + tight Bollinger → overall
+  reads `ranging_low_vol`, atr_regime reads `high`. Read `description`
+  for the human composite. The sub-field was named `volatility` before
+  and read as contradictory; renamed to `atr_regime` so the source is
+  explicit.
+- **avg30DaysVolume isn't a stable Schwab field name**. Live diagnostic
+  showed every ticker returning `avg_volume_30d: 0` after we requested
+  the fundamental block correctly. `_map_quote` now reads through a
+  fallback chain (`avg30DaysVolume` → `avg30DayVolume` → `vol30DayAvg`
+  → `avg10DaysVolume`) and logs the actual fundamental keyset once per
+  unique shape per process. Check container logs for
+  `schwab.fundamental_keys` to identify the canonical name, then
+  collapse the fallback in a small follow-up PR.
+- **Front-of-chain `max_pain_front` / `expected_move_front` skip
+  DTE ≤ 14**. The formatter at `services/mcp/formatters.py` uses
+  `_first_after_dte()` to walk the sorted-by-expiry dict and skip the
+  earliest entries (which are almost always 0-DTE pinning rows with
+  `distance_pct=0` and `expected_move_pct=0`). The full per-expiry
+  dicts on `FullOptionsAnalysis` still contain everything — filtering
+  is a presentation concern only.
+- **support_resistance returns empty in strong trends**. The detector
+  requires `min_touches >= 2` — a level only "counts" if multiple
+  pivots cluster within tolerance. NVDA in a strong uptrend produces
+  isolated single pivots; clusters all have touches=1 and get rejected
+  by the filter. This is correct behavior, not a bug. Callers should
+  fall back to `fibonacci_retracements` and
+  `fibonacci_current_position_pct` for trend-based reference levels
+  (those use swing-high/swing-low and populate even in strong trends).
 - **No process-wide state across tools**. Every tool opens a fresh
   sqlite3 connection (SQLite WAL handles concurrent readers). Tests use
   `reset_modules_for_test_db` to get a tmp DB per case; production uses

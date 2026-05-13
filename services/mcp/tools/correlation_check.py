@@ -51,8 +51,11 @@ async def correlation_check(
             "ticker_b": b,
             "correlation": None,
             "note": (
-                "Pair not in correlation_snapshots cache. Both tickers must be "
-                "in the universe and the nightly correlation job must have run."
+                "Pair not in correlation_snapshots cache. Backfill manually "
+                "with `python -m services.data.cli compute-correlations "
+                "--lookback 30` (or wait for the nightly 06:00 UTC job). "
+                "Both tickers must be in the universe — list it via "
+                "`python -m services.data.cli universe list`."
             ),
             "as_of": matrix.timestamp.isoformat(),
         }
