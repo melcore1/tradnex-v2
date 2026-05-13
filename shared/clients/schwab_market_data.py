@@ -8,6 +8,7 @@ inject a pre-built AsyncClient via the `_client` kwarg to bypass real auth.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time as _time
 from collections.abc import Callable
 from datetime import UTC, date, datetime, time, timedelta
@@ -36,6 +37,14 @@ from shared.schemas.market import (
 
 if TYPE_CHECKING:
     from schwab.client import AsyncClient
+
+
+_logger = logging.getLogger(__name__)
+
+# Memo so we log the fundamental-block key-set once per unique shape per process.
+# Used to identify the canonical Schwab field name for `avg_volume_30d` without
+# spamming the log on every quote call.
+_logged_fundamental_keysets: set[frozenset[str]] = set()
 
 
 class SchwabAuthRequired(Exception):
@@ -210,6 +219,30 @@ class SchwabDataClient(MarketDataClient):
         quote = ticker_data.get("quote", {})
         fundamental = ticker_data.get("fundamental", {})
         last = quote.get("lastPrice", quote.get("mark", 0))
+        # Schwab's fundamental block field name for "30-day average daily volume"
+        # is not stably documented; live diagnostics showed `avg30DaysVolume`
+        # (what we used to read exclusively) returning 0 across major tickers.
+        # Try the most likely canonical names in order. Once we have wire-level
+        # evidence of the right key, collapse this to a single lookup in a
+        # follow-up PR.
+        avg_30d = (
+            fundamental.get("avg30DaysVolume")
+            or fundamental.get("avg30DayVolume")
+            or fundamental.get("vol30DayAvg")
+            or fundamental.get("avg10DaysVolume")
+            or 0
+        )
+        # One-shot log of the fundamental key set per process. Helps identify
+        # the canonical key from prod logs without rebuilding/redeploying.
+        if fundamental:
+            keyset = frozenset(fundamental.keys())
+            if keyset not in _logged_fundamental_keysets:
+                _logged_fundamental_keysets.add(keyset)
+                _logger.info(
+                    "schwab.fundamental_keys ticker=%s keys=%s",
+                    ticker.upper(),
+                    sorted(keyset),
+                )
         return Quote(
             ticker=ticker.upper(),
             spot=_decimal(last),
@@ -222,7 +255,7 @@ class SchwabDataClient(MarketDataClient):
             day_low=_decimal(quote.get("lowPrice", last)),
             prev_close=_decimal(quote.get("closePrice", last)),
             volume=int(quote.get("totalVolume", 0) or 0),
-            avg_volume_30d=int(fundamental.get("avg30DaysVolume", 0) or 0),
+            avg_volume_30d=int(avg_30d or 0),
             is_market_open=_is_us_market_hours_now(),
             timestamp=datetime.now(UTC),
         )

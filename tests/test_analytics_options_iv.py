@@ -397,13 +397,11 @@ def test_compute_options_analysis_iv_rank_none_when_only_short_dte(db_conn) -> N
     assert result.iv_percentile is None
 
 
-def test_compute_options_analysis_picks_atm_per_expiry(db_conn) -> None:
-    """Regression: previous selector used a chain-wide global ATM strike (e.g.
-    $100 picked from the 1-DTE rows) and then required an exact strike match
-    in 30-DTE rows. When 30-DTE only has $95/$105 strikes (wider spacing),
-    the match failed and the fallback picked the 1-DTE row whose annualized
-    IV is unusable. With per-expiry "nearest strike to spot," the 30-DTE
-    $105 row is selected."""
+def test_compute_options_analysis_selector_survives_sparse_strikes(db_conn) -> None:
+    """When a longer expiry's strike grid doesn't contain the spot price
+    exactly, the delta-based ATM selector still picks a stable call. The
+    important property: we DON'T fall back to the 1-DTE row whose annualized
+    IV is unusable."""
     _seed_iv_history(db_conn, "TEST", [0.30, 0.40, 0.50, 0.60, 0.70, 0.80] * 10)
     chain = OptionsChain(
         underlying="TEST",
@@ -412,7 +410,9 @@ def test_compute_options_analysis_picks_atm_per_expiry(db_conn) -> None:
             # 1-DTE: spot-on $100 strike with degenerate annualized IV
             _atm_contract(Decimal("100"), 1, Decimal("5.0")),
             _atm_contract(Decimal("100"), 1, Decimal("4.9"), contract_type="put"),
-            # 30-DTE: no $100 strike — only $95 and $105
+            # 30-DTE: no $100 strike — only $95 and $105 (each at 0.50 delta
+            # per the test helper). Selector picks one of them (tie on |Δ-0.5|),
+            # never the 1-DTE 5.0.
             _atm_contract(Decimal("95"), 30, Decimal("0.31")),
             _atm_contract(Decimal("105"), 30, Decimal("0.33")),
         ],
@@ -420,7 +420,183 @@ def test_compute_options_analysis_picks_atm_per_expiry(db_conn) -> None:
     )
     result = compute_options_analysis(chain, db_conn)
     assert result.iv_rank is not None
-    # Nearest to spot $100 in the 30-DTE expiry: $95 and $105 are equidistant;
-    # min() picks the first by stable ordering. Either is acceptable — the
-    # important thing is the value is NOT the 1-DTE 5.0.
     assert result.iv_rank.current_iv in {Decimal("0.31"), Decimal("0.33")}
+
+
+def test_current_iv_uses_delta_atm_not_strike(db_conn) -> None:
+    """Regression for the live diagnostic: on NVDA, the strike-nearest-to-spot
+    call returned iv=1.66 while the 25-delta call (selected by skew) returned
+    iv=0.47 — Schwab's quoted IV is unreliable for arbitrary-strike contracts
+    on sparse grids. The fix: pick by delta=0.5 (industry-standard ATM),
+    which is robust to this quote distortion."""
+    _seed_iv_history(db_conn, "TEST", [0.30, 0.40, 0.50, 0.60, 0.70, 0.80] * 10)
+    today = datetime.now(UTC).date()
+    spot = Decimal("100")
+    # 30-DTE expiry with two calls:
+    #   - strike $100 (closest to spot), delta=0.95 (deep-ITM), wonky iv=2.0
+    #     — emulates Schwab's spurious quote on strike-nearest calls
+    #   - strike $105 (further from spot), delta=0.50 (true ATM by delta), iv=0.42
+    deep_itm = OptionContract(
+        symbol="TEST_C100_30",
+        underlying="TEST",
+        underlying_spot=spot,
+        expiration=today + timedelta(days=30),
+        dte=30,
+        strike=Decimal("100"),
+        contract_type="call",
+        bid=Decimal("1"), ask=Decimal("1.05"), last=Decimal("1.02"),
+        volume=100, open_interest=500,
+        iv=Decimal("2.0"),
+        delta=Decimal("0.95"),
+        gamma=Decimal("0.02"), theta=Decimal("-0.02"),
+        vega=Decimal("0.10"), rho=Decimal("0.01"),
+    )
+    true_atm = OptionContract(
+        symbol="TEST_C105_30",
+        underlying="TEST",
+        underlying_spot=spot,
+        expiration=today + timedelta(days=30),
+        dte=30,
+        strike=Decimal("105"),
+        contract_type="call",
+        bid=Decimal("1"), ask=Decimal("1.05"), last=Decimal("1.02"),
+        volume=100, open_interest=500,
+        iv=Decimal("0.42"),
+        delta=Decimal("0.50"),
+        gamma=Decimal("0.02"), theta=Decimal("-0.02"),
+        vega=Decimal("0.10"), rho=Decimal("0.01"),
+    )
+    chain = OptionsChain(
+        underlying="TEST",
+        spot_at_fetch=spot,
+        contracts=[deep_itm, true_atm],
+        timestamp=datetime.now(UTC),
+    )
+    result = compute_options_analysis(chain, db_conn)
+    assert result.iv_rank is not None
+    # Old (strike-based) selector would have picked deep_itm (strike $100 is
+    # closer to spot $100 than $105). Delta-based picks true_atm (delta=0.5).
+    assert result.iv_rank.current_iv == Decimal("0.42")
+
+
+def test_term_structure_filters_to_calls_only() -> None:
+    """Regression for the live diagnostic: scout NVDA returned front_month_iv=2.07
+    because term_structure's `min(contracts, key=...)` iterated calls AND puts.
+    A deep-ITM put at the nearest strike has bid-ask-distorted quoted IV that
+    contaminates the front_month_iv reading. After the fix, only calls are
+    considered."""
+    today = datetime.now(UTC).date()
+    spot = Decimal("100")
+    # 30-DTE: a put at $100 with garbage iv=2.0, plus a call at $100 with normal iv=0.40
+    put_at_atm = OptionContract(
+        symbol="TEST_P100_30",
+        underlying="TEST",
+        underlying_spot=spot,
+        expiration=today + timedelta(days=30),
+        dte=30,
+        strike=Decimal("100"),
+        contract_type="put",
+        bid=Decimal("1"), ask=Decimal("1.05"), last=Decimal("1.02"),
+        volume=100, open_interest=500,
+        iv=Decimal("2.0"),
+        delta=Decimal("-0.50"),
+        gamma=Decimal("0.02"), theta=Decimal("-0.02"),
+        vega=Decimal("0.10"), rho=Decimal("-0.01"),
+    )
+    call_at_atm_30 = OptionContract(
+        symbol="TEST_C100_30",
+        underlying="TEST",
+        underlying_spot=spot,
+        expiration=today + timedelta(days=30),
+        dte=30,
+        strike=Decimal("100"),
+        contract_type="call",
+        bid=Decimal("1"), ask=Decimal("1.05"), last=Decimal("1.02"),
+        volume=100, open_interest=500,
+        iv=Decimal("0.40"),
+        delta=Decimal("0.50"),
+        gamma=Decimal("0.02"), theta=Decimal("-0.02"),
+        vega=Decimal("0.10"), rho=Decimal("0.01"),
+    )
+    # 90-DTE: a clean call so term_structure has >= 2 points
+    call_at_atm_90 = OptionContract(
+        symbol="TEST_C100_90",
+        underlying="TEST",
+        underlying_spot=spot,
+        expiration=today + timedelta(days=90),
+        dte=90,
+        strike=Decimal("100"),
+        contract_type="call",
+        bid=Decimal("1"), ask=Decimal("1.05"), last=Decimal("1.02"),
+        volume=100, open_interest=500,
+        iv=Decimal("0.45"),
+        delta=Decimal("0.50"),
+        gamma=Decimal("0.02"), theta=Decimal("-0.02"),
+        vega=Decimal("0.10"), rho=Decimal("0.01"),
+    )
+    chain = OptionsChain(
+        underlying="TEST",
+        spot_at_fetch=spot,
+        contracts=[put_at_atm, call_at_atm_30, call_at_atm_90],
+        timestamp=datetime.now(UTC),
+    )
+    result = term_structure(chain)
+    # front_month_iv must be the call's iv (0.40), not the put's wonky 2.0.
+    assert result.front_month_iv == Decimal("0.40")
+    assert result.back_month_iv == Decimal("0.45")
+
+
+def test_term_structure_uses_delta_atm() -> None:
+    """Same as the strike-vs-delta test for term_structure: a strike-nearest
+    call with wonky iv must not get picked when a delta-0.5 call exists at a
+    further strike."""
+    today = datetime.now(UTC).date()
+    spot = Decimal("100")
+    # 30-DTE: strike-nearest call has delta 0.95 + wonky iv 2.0; delta-0.5 call
+    # has strike $110 with clean iv 0.40.
+    deep_itm_30 = OptionContract(
+        symbol="TEST_C100_30",
+        underlying="TEST", underlying_spot=spot,
+        expiration=today + timedelta(days=30), dte=30,
+        strike=Decimal("100"), contract_type="call",
+        bid=Decimal("1"), ask=Decimal("1.05"), last=Decimal("1.02"),
+        volume=100, open_interest=500,
+        iv=Decimal("2.0"),
+        delta=Decimal("0.95"),
+        gamma=Decimal("0.02"), theta=Decimal("-0.02"),
+        vega=Decimal("0.10"), rho=Decimal("0.01"),
+    )
+    true_atm_30 = OptionContract(
+        symbol="TEST_C110_30",
+        underlying="TEST", underlying_spot=spot,
+        expiration=today + timedelta(days=30), dte=30,
+        strike=Decimal("110"), contract_type="call",
+        bid=Decimal("1"), ask=Decimal("1.05"), last=Decimal("1.02"),
+        volume=100, open_interest=500,
+        iv=Decimal("0.40"),
+        delta=Decimal("0.50"),
+        gamma=Decimal("0.02"), theta=Decimal("-0.02"),
+        vega=Decimal("0.10"), rho=Decimal("0.01"),
+    )
+    # 90-DTE: clean delta-0.5 call
+    call_90 = OptionContract(
+        symbol="TEST_C100_90",
+        underlying="TEST", underlying_spot=spot,
+        expiration=today + timedelta(days=90), dte=90,
+        strike=Decimal("100"), contract_type="call",
+        bid=Decimal("1"), ask=Decimal("1.05"), last=Decimal("1.02"),
+        volume=100, open_interest=500,
+        iv=Decimal("0.45"),
+        delta=Decimal("0.50"),
+        gamma=Decimal("0.02"), theta=Decimal("-0.02"),
+        vega=Decimal("0.10"), rho=Decimal("0.01"),
+    )
+    chain = OptionsChain(
+        underlying="TEST",
+        spot_at_fetch=spot,
+        contracts=[deep_itm_30, true_atm_30, call_90],
+        timestamp=datetime.now(UTC),
+    )
+    result = term_structure(chain)
+    assert result.front_month_iv == Decimal("0.40")
+    assert result.back_month_iv == Decimal("0.45")

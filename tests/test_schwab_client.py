@@ -127,6 +127,41 @@ async def test_get_quotes_returns_dict_keyed_by_uppercase_ticker() -> None:
     assert result["AAPL"].spot == Decimal("228.5")
 
 
+@pytest.mark.parametrize(
+    ("field_name", "expected"),
+    [
+        ("avg30DaysVolume", 45_000_000),
+        ("avg30DayVolume", 33_000_000),
+        ("vol30DayAvg", 28_000_000),
+        ("avg10DaysVolume", 12_000_000),
+    ],
+)
+async def test_get_quote_reads_avg_volume_with_fallback_keys(
+    field_name: str, expected: int
+) -> None:
+    """Regression for the live diagnostic: avg_volume_30d came back as 0 across
+    SPY/QQQ/NVDA/AAPL/TSLA after the fundamental-block request fix landed,
+    which means our hardcoded `avg30DaysVolume` key does not match Schwab's
+    actual response. The fallback chain reads whichever name Schwab uses; a
+    one-shot info log identifies the canonical key for a follow-up cleanup."""
+    body = {
+        "AAPL": {
+            "quote": {
+                "lastPrice": 228.50,
+                "totalVolume": 50_000_000,
+                "closePrice": 226.50,
+            },
+            "fundamental": {field_name: expected},
+        }
+    }
+    mock = AsyncMock()
+    mock.get_quote = AsyncMock(return_value=_make_response(200, body))
+    client = _client_with(mock)
+
+    quote = await client.get_quote("AAPL")
+    assert quote.avg_volume_30d == expected
+
+
 async def test_get_quote_passes_fundamental_field_as_list() -> None:
     """Regression: schwab-py's default fields=None drops the fundamental
     block, so avg_volume_30d silently becomes 0. We must pass

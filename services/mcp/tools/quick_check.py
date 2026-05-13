@@ -55,7 +55,12 @@ async def _one(ticker: str, client: MarketDataClient) -> dict[str, Any]:
     bars_task = client.get_bars(ticker, timeframe="1d", limit=250)
     quote, bars = await asyncio.gather(quote_task, bars_task)
 
-    analysis = await compute_full_analysis(ticker, bars)
+    # Pass the live quote spot so analysis.summary uses the same price as the
+    # response's `price` field. Without this, summary uses bars[-1].close which
+    # can lag the live quote by a few points when the daily bar is still being
+    # written or the market just closed (e.g. summary "TSLA at 433.443" while
+    # price showed 430.31 in the live diagnostic).
+    analysis = await compute_full_analysis(ticker, bars, spot_override=quote.spot)
 
     return {
         **format_quote(quote),

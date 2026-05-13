@@ -111,18 +111,21 @@ class FullOptionsAnalysis(BaseModel):
 def _select_current_iv_contract(chain: OptionsChain) -> OptionContract:
     """Pick a call contract whose IV is a stable input to IV rank / term structure.
 
-    Preference: closest expiry to 30 DTE in the [21, 45] window, then closest
-    strike to spot within that expiry. Widens to (14, ∞) DTE only if the
-    preferred window is empty. Picks ATM **per expiry** rather than at a
-    chain-wide global strike — longer expiries have wider strike spacing, so
-    the global ATM strike often doesn't exist there and the previous selector
-    silently fell back to a 1-DTE row whose annualized IV reads as 500%+.
+    Selection: closest expiry to 30 DTE in the [21, 45] window (widens to
+    (14, ∞) DTE if empty), then closest call to delta=0.5 within that expiry.
+
+    Uses **delta-based** ATM selection rather than strike-based. Delta is
+    normalized and continuous, so it's robust to strike-grid sparsity. Live
+    diagnostic on NVDA: the same chain's 25-delta call (selected by skew)
+    returned a clean iv=0.47, while the strike-nearest-to-spot call returned
+    iv=1.66 — Schwab's quoted IV is unreliable for arbitrary-strike contracts
+    on sparse grids, but consistent for delta-targeted contracts (which is
+    how tastytrade, IBKR, ORATS, SpotGamma all compute ATM IV).
 
     Raises:
         InsufficientChainError: when no call contract with DTE > 14 exists
             (e.g. chain only contains 0-DTE / 1-DTE pinning rows).
     """
-    spot = chain.spot_at_fetch
     calls = [c for c in chain.contracts if c.contract_type == "call"]
     if not calls:
         raise InsufficientChainError("Chain has no call contracts for IV selection")
@@ -135,7 +138,7 @@ def _select_current_iv_contract(chain: OptionsChain) -> OptionContract:
         )
     target_dte = min({c.dte for c in pool}, key=lambda d: abs(d - 30))
     in_expiry = [c for c in pool if c.dte == target_dte]
-    return min(in_expiry, key=lambda c: abs(c.strike - spot))
+    return min(in_expiry, key=lambda c: abs(float(c.delta) - 0.5))
 
 
 def compute_options_analysis(

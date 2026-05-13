@@ -73,6 +73,20 @@ async def test_full_analysis_crossover_is_valid_state(nvda_bars) -> None:
     assert fa.sma50_200_crossover in ("crossed_above", "crossed_below", "none")
 
 
+async def test_full_analysis_spot_override_used_in_summary(nvda_bars) -> None:
+    """Regression for the live diagnostic: quick_check showed `price: 430.31`
+    (live quote) but `summary: "TSLA at 433.443"` because the summary's spot
+    was bars[-1].close (lagging the live quote). With `spot_override`,
+    callers can pass the live quote and the summary stays consistent."""
+    from decimal import Decimal as _Decimal
+
+    fa = await compute_full_analysis(
+        "NVDA", nvda_bars, spot_override=_Decimal("999.99")
+    )
+    assert fa.spot == _Decimal("999.99")
+    assert "999.99" in fa.summary
+
+
 async def test_full_analysis_above_200_sma_is_none_when_bars_insufficient() -> None:
     """Regression: scout NVDA with days_history=90 returned sma200:null but
     above_200_sma:false. Downstream the 6-rule strategy's H1 silently failed

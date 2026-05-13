@@ -216,24 +216,33 @@ def skew(chain: OptionsChain, expiration: date | None = None) -> SkewResult:
 def term_structure(chain: OptionsChain) -> TermStructureResult:
     if not chain.expirations:
         raise InsufficientChainError("Chain has no expirations")
-    spot = chain.spot_at_fetch
     today = datetime.now(UTC).date()
 
     points: list[tuple[int, Decimal]] = []
     for exp in chain.expirations:
         dte = (exp - today).days
         # Skip 0/1-DTE pinning rows — their annualized IV diverges and pollutes
-        # the front_month_iv reading (we saw front_month_iv=3.29 = 329%
-        # because the 1-DTE expiry was picked as "front").
+        # the front_month_iv reading.
         if dte <= 14:
             continue
-        contracts = chain.for_expiration(exp)
-        if not contracts:
+        # CALLS ONLY. The previous "nearest strike to spot" iterated all
+        # contracts in the expiry (calls + puts), letting deep-ITM puts with
+        # bid-ask-spread-distorted quoted IV become "front_month_iv" — we saw
+        # front_month_iv=2.07 = 207% on NVDA because of this. Filter first.
+        calls_in_exp = [
+            c
+            for c in chain.for_expiration(exp)
+            if c.contract_type == "call"
+        ]
+        if not calls_in_exp:
             continue
-        # Pick ATM by nearest strike to spot per expiry (rather than exact-match
-        # to a chain-wide global strike) — longer expiries have wider strike
-        # spacing, so a global strike often doesn't exist there.
-        atm = min(contracts, key=lambda c: abs(c.strike - spot))
+        # ATM-by-DELTA (closest to 0.5), not by strike. Skew uses delta-based
+        # selection on the same chain and gets clean IVs (~0.47 for NVDA);
+        # strike-based selection on a sparse grid picks contracts whose
+        # Schwab-quoted IV is wonky (the 25-delta call had iv=0.47 while the
+        # strike-nearest call had iv=1.66 in the same expiry). Delta is
+        # robust to strike-grid sparsity.
+        atm = min(calls_in_exp, key=lambda c: abs(float(c.delta) - 0.5))
         points.append((dte, atm.iv))
 
     if len(points) < 2:

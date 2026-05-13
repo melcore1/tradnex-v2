@@ -112,6 +112,7 @@ async def compute_full_analysis(
     timeframe: str = "1d",
     options_analysis: FullOptionsAnalysis | None = None,
     regime_thresholds: RegimeThresholds | None = None,
+    spot_override: Decimal | None = None,
 ) -> FullAnalysis:
     """Compute every Tier 2 analytic plus the regime state from a ticker's bars.
 
@@ -121,6 +122,12 @@ async def compute_full_analysis(
 
     Pass `options_analysis` to enrich the regime classifier with gamma + IV
     components; otherwise those components fall back to 'unknown'.
+
+    Pass `spot_override` when a live quote is already available (e.g. from
+    quick_check which fetches a quote in parallel with bars). The summary
+    string and `spot` field will use this value instead of `bars[-1].close`
+    — the latter can lag the live price by a few points when the most
+    recent daily bar is still being written or hasn't ticked over.
     """
     if not bars:
         raise ValueError("bars must not be empty")
@@ -160,9 +167,14 @@ async def compute_full_analysis(
         garch_r = None
         monte_carlo_r = None
 
+    spot = (
+        spot_override
+        if spot_override is not None
+        else Decimal(str(bars[-1].close))
+    )
     partial = FullAnalysis(
         ticker=ticker.upper(),
-        spot=Decimal(str(bars[-1].close)),
+        spot=spot,
         timestamp=datetime.now(UTC),
         bars_count=len(bars),
         timeframe=timeframe,
