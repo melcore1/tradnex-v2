@@ -127,6 +127,33 @@ async def test_get_quotes_returns_dict_keyed_by_uppercase_ticker() -> None:
     assert result["AAPL"].spot == Decimal("228.5")
 
 
+async def test_get_quote_passes_fundamental_field() -> None:
+    """Regression: schwab-py's default fields=None drops the fundamental
+    block, so avg_volume_30d silently becomes 0. We must pass
+    fields="quote,fundamental" on every call."""
+    mock = AsyncMock()
+    mock.get_quote = AsyncMock(return_value=_make_response(200, SAMPLE_QUOTE_RESPONSE))
+    client = _client_with(mock)
+
+    await client.get_quote("AAPL")
+
+    assert mock.get_quote.call_args is not None
+    assert "fundamental" in mock.get_quote.call_args.kwargs["fields"]
+
+
+async def test_get_quotes_passes_fundamental_field() -> None:
+    """Same regression as test_get_quote_passes_fundamental_field but for
+    the batch endpoint."""
+    mock = AsyncMock()
+    mock.get_quotes = AsyncMock(return_value=_make_response(200, SAMPLE_QUOTE_RESPONSE))
+    client = _client_with(mock)
+
+    await client.get_quotes(["AAPL"])
+
+    assert mock.get_quotes.call_args is not None
+    assert "fundamental" in mock.get_quotes.call_args.kwargs["fields"]
+
+
 SAMPLE_BARS_RESPONSE = {
     "candles": [
         {
