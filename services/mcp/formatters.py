@@ -122,19 +122,27 @@ def format_tier3(options: FullOptionsAnalysis) -> dict[str, Any]:
             "distance_to_call_wall_pct": _s(options.gex.distance_to_call_wall_pct),
             "distance_to_put_wall_pct": _s(options.gex.distance_to_put_wall_pct),
         },
-        "iv_rank": {
-            "rank": _s(options.iv_rank.rank),
-            "current_iv": _s(options.iv_rank.current_iv),
-            "min_iv": _s(options.iv_rank.iv_min_lookback),
-            "max_iv": _s(options.iv_rank.iv_max_lookback),
-            "data_points": options.iv_rank.data_points,
-            "lookback_days": options.iv_rank.lookback_days,
-            "regime": options.iv_rank.regime,
-        },
-        "iv_percentile": {
-            "percentile": _s(options.iv_percentile.percentile),
-            "data_points": options.iv_percentile.data_points,
-        },
+        "iv_rank": (
+            {
+                "rank": _s(options.iv_rank.rank),
+                "current_iv": _s(options.iv_rank.current_iv),
+                "min_iv": _s(options.iv_rank.iv_min_lookback),
+                "max_iv": _s(options.iv_rank.iv_max_lookback),
+                "data_points": options.iv_rank.data_points,
+                "lookback_days": options.iv_rank.lookback_days,
+                "regime": options.iv_rank.regime,
+            }
+            if options.iv_rank is not None
+            else None
+        ),
+        "iv_percentile": (
+            {
+                "percentile": _s(options.iv_percentile.percentile),
+                "data_points": options.iv_percentile.data_points,
+            }
+            if options.iv_percentile is not None
+            else None
+        ),
         "skew": (
             {
                 "put_25d_iv": _s(options.skew.put_25d_iv),

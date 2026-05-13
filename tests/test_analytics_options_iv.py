@@ -208,6 +208,69 @@ def test_term_structure_backwardation_when_front_higher() -> None:
     assert result.slope < Decimal("0")
 
 
+def test_term_structure_skips_short_dte_expiries() -> None:
+    """Regression for the live diagnostic: scout returned front_month_iv=3.29
+    (= 329% annualized) because the 1-DTE pinning row was picked as "front".
+    The fix: skip DTE <= 14 entirely when computing term structure."""
+    # 1-DTE has a degenerate IV of 5.0. If it leaks into front_month_iv,
+    # the slope and regime will be garbage.
+    chain = _build_term_structure_chain({1: 5.0, 30: 0.30, 90: 0.35})
+    result = term_structure(chain)
+    # Front must be the 30-DTE row (IV 0.30), not the 1-DTE row.
+    assert result.front_month_iv == Decimal("0.30")
+    assert result.back_month_iv == Decimal("0.35")
+    assert result.regime == "contango"
+
+
+def test_term_structure_picks_nearest_strike_per_expiry() -> None:
+    """When a longer expiry has wider strike spacing and doesn't contain the
+    exact ATM strike, term_structure must pick the nearest strike rather than
+    silently dropping the expiry."""
+    today = datetime.now(UTC).date()
+    contracts = [
+        # 30-DTE: $100 strike present (ATM)
+        OptionContract(
+            symbol="TEST_call_30",
+            underlying="TEST",
+            underlying_spot=Decimal("100"),
+            expiration=today + timedelta(days=30),
+            dte=30,
+            strike=Decimal("100"),
+            contract_type="call",
+            bid=Decimal("1"), ask=Decimal("1.05"), last=Decimal("1.02"),
+            volume=100, open_interest=500,
+            iv=Decimal("0.30"),
+            delta=Decimal("0.5"), gamma=Decimal("0.02"),
+            theta=Decimal("-0.02"), vega=Decimal("0.10"), rho=Decimal("0.01"),
+        ),
+        # 90-DTE: only $95 / $105 strikes (no exact ATM). Old code would skip
+        # this expiry entirely, leaving term_structure with 1 point → raises.
+        OptionContract(
+            symbol="TEST_call_90_95",
+            underlying="TEST",
+            underlying_spot=Decimal("100"),
+            expiration=today + timedelta(days=90),
+            dte=90,
+            strike=Decimal("95"),
+            contract_type="call",
+            bid=Decimal("1"), ask=Decimal("1.05"), last=Decimal("1.02"),
+            volume=100, open_interest=500,
+            iv=Decimal("0.35"),
+            delta=Decimal("0.5"), gamma=Decimal("0.02"),
+            theta=Decimal("-0.02"), vega=Decimal("0.10"), rho=Decimal("0.01"),
+        ),
+    ]
+    chain = OptionsChain(
+        underlying="TEST",
+        spot_at_fetch=Decimal("100"),
+        contracts=contracts,
+        timestamp=datetime.now(UTC),
+    )
+    result = term_structure(chain)
+    assert result.front_month_iv == Decimal("0.30")
+    assert result.back_month_iv == Decimal("0.35")
+
+
 def _make_garch(annualized: float) -> GARCHResult:
     return GARCHResult(
         timestamp=datetime.now(UTC),
@@ -311,9 +374,12 @@ def test_compute_options_analysis_skips_zero_dte(db_conn) -> None:
     assert result.iv_rank.current_iv == Decimal("0.35")
 
 
-def test_compute_options_analysis_falls_back_when_no_long_dte(db_conn) -> None:
-    """Last-resort: when no ATM call has DTE > 14, fall back to the original
-    behaviour (lowest DTE > 0) so analysis still runs rather than crashing."""
+def test_compute_options_analysis_iv_rank_none_when_only_short_dte(db_conn) -> None:
+    """Regression for the live diagnostic: scout NVDA on an expiry-day chain
+    returned current_iv=6.36 (= 636% annualized) because the IV selector fell
+    back to a 1-DTE row. With the per-expiry, DTE>14-only selector, the right
+    answer here is `iv_rank=None` — emitting a 500%+ "current IV" pollutes
+    iv-rank, term-structure slope, and expected-move comparisons."""
     _seed_iv_history(db_conn, "TEST", [0.30, 0.40, 0.50, 0.60, 0.70, 0.80] * 10)
     chain = OptionsChain(
         underlying="TEST",
@@ -326,7 +392,35 @@ def test_compute_options_analysis_falls_back_when_no_long_dte(db_conn) -> None:
         ],
         timestamp=datetime.now(UTC),
     )
-    # Sanity: it doesn't crash and picks a contract from the chain. The exact
-    # choice is best-effort because every row here is degenerate.
     result = compute_options_analysis(chain, db_conn)
-    assert result.iv_rank.current_iv in {Decimal("5.0"), Decimal("1.2")}
+    assert result.iv_rank is None
+    assert result.iv_percentile is None
+
+
+def test_compute_options_analysis_picks_atm_per_expiry(db_conn) -> None:
+    """Regression: previous selector used a chain-wide global ATM strike (e.g.
+    $100 picked from the 1-DTE rows) and then required an exact strike match
+    in 30-DTE rows. When 30-DTE only has $95/$105 strikes (wider spacing),
+    the match failed and the fallback picked the 1-DTE row whose annualized
+    IV is unusable. With per-expiry "nearest strike to spot," the 30-DTE
+    $105 row is selected."""
+    _seed_iv_history(db_conn, "TEST", [0.30, 0.40, 0.50, 0.60, 0.70, 0.80] * 10)
+    chain = OptionsChain(
+        underlying="TEST",
+        spot_at_fetch=Decimal("100"),
+        contracts=[
+            # 1-DTE: spot-on $100 strike with degenerate annualized IV
+            _atm_contract(Decimal("100"), 1, Decimal("5.0")),
+            _atm_contract(Decimal("100"), 1, Decimal("4.9"), contract_type="put"),
+            # 30-DTE: no $100 strike — only $95 and $105
+            _atm_contract(Decimal("95"), 30, Decimal("0.31")),
+            _atm_contract(Decimal("105"), 30, Decimal("0.33")),
+        ],
+        timestamp=datetime.now(UTC),
+    )
+    result = compute_options_analysis(chain, db_conn)
+    assert result.iv_rank is not None
+    # Nearest to spot $100 in the 30-DTE expiry: $95 and $105 are equidistant;
+    # min() picks the first by stable ordering. Either is acceptable — the
+    # important thing is the value is NOT the 1-DTE 5.0.
+    assert result.iv_rank.current_iv in {Decimal("0.31"), Decimal("0.33")}

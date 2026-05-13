@@ -232,13 +232,16 @@ class SchwabDataClient(MarketDataClient):
         # "quote block only" — the `fundamental` block (avg30DaysVolume,
         # etc.) is omitted. Request both blocks explicitly so
         # Quote.avg_volume_30d isn't silently zero in production.
-        response = await self._client.get_quote(ticker, fields="quote,fundamental")
+        # Must be a list: schwab-py's convert_enum_iterable iterates whatever it
+        # gets, so passing a string makes it iterate character-by-character,
+        # producing fields='q,u,o,t,e,,,f,u,n,d,a,m,e,n,t,a,l' and a Schwab 400.
+        response = await self._client.get_quote(ticker, fields=["quote", "fundamental"])
         self._raise_for_status(response)
         return self._map_quote(ticker, response.json())
 
     async def get_quotes(self, tickers: list[str]) -> dict[str, Quote]:
-        # See get_quote — request the `fundamental` block explicitly.
-        response = await self._client.get_quotes(tickers, fields="quote,fundamental")
+        # See get_quote — request the `fundamental` block explicitly, as a list.
+        response = await self._client.get_quotes(tickers, fields=["quote", "fundamental"])
         self._raise_for_status(response)
         data = response.json()
         return {t.upper(): self._map_quote(t, data) for t in tickers}
@@ -394,6 +397,27 @@ class SchwabDataClient(MarketDataClient):
         )
 
     async def get_movers(self) -> Movers:
+        """Three-call movers fetch with defensive post-processing.
+
+        Schwab's `/marketdata/v1/movers/{index}` response has been observed to:
+          - report both `volume` and `totalVolume` as the index aggregate (so
+            every row in the response shows the same ~3.3B number for $SPX);
+          - return the same ranked ticker set regardless of the `sort` param,
+            especially after-hours.
+
+        We work around both issues:
+          1. Volume backfill — issue one batched `get_quotes` for the union of
+             tickers across the three lists and overwrite each MoverEntry's
+             volume with the per-symbol `totalVolume` from the quote block
+             (which we already use as the per-symbol volume in get_quote).
+          2. Category sanity filter — drop rows whose `netPercentChange` sign
+             doesn't match the requested category (gainers must be > 0,
+             losers must be < 0), then re-sort within the category. This
+             catches the after-hours case where Schwab returns the same list
+             for every `sort` value and we'd otherwise label INTC at -9.17%
+             as a "top_gainer".
+        """
+
         async def _movers_for(sort_order: str) -> list[dict[str, Any]]:
             response = await self._client.get_movers(
                 "$SPX",
@@ -410,34 +434,64 @@ class SchwabDataClient(MarketDataClient):
             _movers_for("PERCENT_CHANGE_DOWN"),
         )
 
+        # --- Filter / sort each category by its sort dimension ---
+        # Schwab is unreliable about honoring the `sort` param after-hours, so
+        # we enforce the category contract client-side. `most_active` keeps
+        # whatever rows the API returned and sorts by volume desc.
+        def _change(row: dict[str, Any]) -> Decimal:
+            return _decimal(row.get("netPercentChange", 0))
+
+        gainers_filtered = sorted(
+            [r for r in gainers_raw if _change(r) > 0],
+            key=_change,
+            reverse=True,
+        )[:10]
+        losers_filtered = sorted(
+            [r for r in losers_raw if _change(r) < 0],
+            key=_change,
+        )[:10]
+        active_filtered = active_raw[:10]
+
+        # --- Backfill per-symbol volume from the quotes endpoint ---
+        # Schwab's movers response carries broadcast index volume in `volume`
+        # and `totalVolume` — neither is per-symbol. The quotes endpoint
+        # `totalVolume` IS per-symbol (mapped at line ~224 already).
+        unique_tickers = sorted({
+            str(r.get("symbol") or "").upper()
+            for r in (active_filtered + gainers_filtered + losers_filtered)
+            if r.get("symbol")
+        })
+        volume_by_ticker: dict[str, int] = {}
+        if unique_tickers:
+            try:
+                quotes = await self.get_quotes(unique_tickers)
+                volume_by_ticker = {t: q.volume for t, q in quotes.items()}
+            except Exception:  # noqa: BLE001
+                # Best-effort: if the batched quote fetch fails for any reason
+                # (network error, partial response, malformed JSON in tests),
+                # the movers response still flows through with volume=0.
+                # Better than crashing the whole `market_overview` call.
+                volume_by_ticker = {}
+
         def _to_entries(rows: list[dict[str, Any]], category: str) -> list[MoverEntry]:
             entries: list[MoverEntry] = []
-            for r in rows[:10]:
-                # Schwab Screener fields:
-                #   `volume`      → per-symbol traded volume (what we want)
-                #   `totalVolume` → INDEX aggregate, broadcast identical to every
-                #                   row (e.g. ~3.3B for $SPX). Reading this here
-                #                   caused every mover to show the same volume
-                #                   number in earlier builds.
-                #   `lastPrice`   → most-recent quote
-                #   `netPercentChange` → percent change (the sort dimension)
-                # Fall back gracefully when a field is missing/None so a single
-                # malformed row doesn't crash the whole mapping.
+            for r in rows:
+                ticker = str(r.get("symbol") or "").upper()
                 entries.append(
                     MoverEntry(
-                        ticker=str(r.get("symbol") or "").upper(),
+                        ticker=ticker,
                         last=_decimal(r.get("lastPrice", 0)),
-                        change_pct=_decimal(r.get("netPercentChange", 0)),
-                        volume=int(r.get("volume", 0) or 0),
+                        change_pct=_change(r),
+                        volume=volume_by_ticker.get(ticker, 0),
                         category=category,  # type: ignore[arg-type]
                     )
                 )
             return entries
 
         return Movers(
-            most_active=_to_entries(active_raw, "most_active"),
-            top_gainers=_to_entries(gainers_raw, "top_gainer"),
-            top_losers=_to_entries(losers_raw, "top_loser"),
+            most_active=_to_entries(active_filtered, "most_active"),
+            top_gainers=_to_entries(gainers_filtered, "top_gainer"),
+            top_losers=_to_entries(losers_filtered, "top_loser"),
             timestamp=datetime.now(UTC),
         )
 

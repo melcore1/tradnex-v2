@@ -147,3 +147,24 @@ def test_distance_to_walls_signed_correctly() -> None:
     assert result.distance_to_call_wall_pct is not None
     assert float(result.distance_to_call_wall_pct) == pytest.approx(5.0, abs=0.01)
     assert float(result.distance_to_put_wall_pct) == pytest.approx(-5.0, abs=0.01)
+
+
+def test_gex_regime_is_flip_zone_when_chain_has_no_gamma() -> None:
+    """Regression for the live diagnostic: scout NVDA returned
+        gex.net=0.0, dealer_position=neutral, regime=negative_gamma
+    when the chain had no usable gamma contributions. The old fallthrough
+    branch treated 0.0 as "negative" instead of "no signal." With the fix,
+    a degenerate chain (total_abs=0) is classified as flip_zone, consistent
+    with dealer_position=neutral."""
+    # All contracts have gamma=0 and open_interest=0 → no GEX contributions.
+    chain = _chain(
+        [
+            _contract(strike=100, gamma=0.0, open_interest=0),
+            _contract(strike=100, contract_type="put", gamma=0.0, open_interest=0),
+        ],
+        spot=100,
+    )
+    result = gex_per_strike(chain)
+    assert float(result.net_gex) == 0.0
+    assert result.regime == "flip_zone"
+    assert result.dealer_position == "neutral"

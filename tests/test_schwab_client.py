@@ -127,10 +127,14 @@ async def test_get_quotes_returns_dict_keyed_by_uppercase_ticker() -> None:
     assert result["AAPL"].spot == Decimal("228.5")
 
 
-async def test_get_quote_passes_fundamental_field() -> None:
+async def test_get_quote_passes_fundamental_field_as_list() -> None:
     """Regression: schwab-py's default fields=None drops the fundamental
     block, so avg_volume_30d silently becomes 0. We must pass
-    fields="quote,fundamental" on every call."""
+    fields=["quote", "fundamental"] (a LIST, not a string) on every call.
+
+    schwab-py's `convert_enum_iterable` iterates whatever it receives. Pass
+    a string and it iterates character-by-character, producing the request
+    `fields=q,u,o,t,e,,,f,u,n,d,a,m,e,n,t,a,l` and a Schwab 400."""
     mock = AsyncMock()
     mock.get_quote = AsyncMock(return_value=_make_response(200, SAMPLE_QUOTE_RESPONSE))
     client = _client_with(mock)
@@ -138,12 +142,14 @@ async def test_get_quote_passes_fundamental_field() -> None:
     await client.get_quote("AAPL")
 
     assert mock.get_quote.call_args is not None
-    assert "fundamental" in mock.get_quote.call_args.kwargs["fields"]
+    fields = mock.get_quote.call_args.kwargs["fields"]
+    assert isinstance(fields, list), f"fields must be a list, got {type(fields).__name__}"
+    assert fields == ["quote", "fundamental"]
 
 
-async def test_get_quotes_passes_fundamental_field() -> None:
-    """Same regression as test_get_quote_passes_fundamental_field but for
-    the batch endpoint."""
+async def test_get_quotes_passes_fundamental_field_as_list() -> None:
+    """Same regression as test_get_quote_passes_fundamental_field_as_list but
+    for the batch endpoint."""
     mock = AsyncMock()
     mock.get_quotes = AsyncMock(return_value=_make_response(200, SAMPLE_QUOTE_RESPONSE))
     client = _client_with(mock)
@@ -151,7 +157,9 @@ async def test_get_quotes_passes_fundamental_field() -> None:
     await client.get_quotes(["AAPL"])
 
     assert mock.get_quotes.call_args is not None
-    assert "fundamental" in mock.get_quotes.call_args.kwargs["fields"]
+    fields = mock.get_quotes.call_args.kwargs["fields"]
+    assert isinstance(fields, list), f"fields must be a list, got {type(fields).__name__}"
+    assert fields == ["quote", "fundamental"]
 
 
 SAMPLE_BARS_RESPONSE = {
@@ -513,6 +521,30 @@ SAMPLE_MOVERS_RESPONSE_LOSERS = {
 }
 
 
+def _quote_block(volume: int) -> dict[str, Any]:
+    """Build a minimal Schwab quote response body for one symbol."""
+    return {
+        "quote": {
+            "lastPrice": 100.0,
+            "bidPrice": 99.9,
+            "askPrice": 100.1,
+            "bidSize": 1,
+            "askSize": 1,
+            "openPrice": 100.0,
+            "highPrice": 100.0,
+            "lowPrice": 100.0,
+            "closePrice": 100.0,
+            "totalVolume": volume,
+        },
+        "fundamental": {"avg30DaysVolume": volume},
+    }
+
+
+def _multi_quote_response(volumes: dict[str, int]) -> dict[str, Any]:
+    """Build a Schwab batched-quotes response for a dict of {ticker: volume}."""
+    return {t: _quote_block(v) for t, v in volumes.items()}
+
+
 async def test_get_movers_invokes_three_distinct_sort_orders() -> None:
     """Regression: each of the three mover categories MUST invoke the
     underlying Schwab API with a distinct ``sort_order`` argument. Earlier
@@ -529,6 +561,20 @@ async def test_get_movers_invokes_three_distinct_sort_orders() -> None:
 
     mock = AsyncMock()
     mock.get_movers = AsyncMock(side_effect=_per_sort)
+    # Per-symbol volume is backfilled via a follow-up batched get_quotes call —
+    # mock that with distinct volumes so the assertions can verify per-row
+    # diversity.
+    mock.get_quotes = AsyncMock(
+        return_value=_make_response(
+            200,
+            _multi_quote_response({
+                "NVDA": 75_000_000,
+                "AAPL": 50_000_000,
+                "SMCI": 20_000_000,
+                "INTC": 80_000_000,
+            }),
+        )
+    )
     client = _client_with(mock)
 
     movers = await client.get_movers()
@@ -549,30 +595,42 @@ async def test_get_movers_invokes_three_distinct_sort_orders() -> None:
         assert call.args == ("$SPX",)
         assert call.kwargs.get("frequency") == 10
 
-    # The categories should map to disjoint ticker sets given disjoint responses.
+    # The categories map to disjoint ticker sets given disjoint responses.
+    # NVDA + AAPL are returned by the VOLUME sort. NVDA's change_pct is +1.33
+    # (positive), AAPL's is -0.52 (negative). most_active keeps both.
     assert {m.ticker for m in movers.most_active} == {"NVDA", "AAPL"}
     assert {m.ticker for m in movers.top_gainers} == {"SMCI"}
     assert {m.ticker for m in movers.top_losers} == {"INTC"}
 
 
-async def test_get_movers_uses_per_symbol_volume_not_index_aggregate() -> None:
-    """Regression: Schwab Screener rows include both ``volume`` (per-symbol)
-    and ``totalVolume`` (index aggregate broadcast to every row). Reading
-    ``totalVolume`` made every mover show the same ~3.3B value in production
-    output. The mapping must use ``volume``.
-    """
+async def test_get_movers_backfills_volume_from_quotes() -> None:
+    """Regression for the live diagnostic: Schwab's movers response broadcasts
+    a single ~3.3B index-aggregate volume across every row in `volume` AND
+    `totalVolume`, so neither field is usable as per-symbol volume. The fix
+    is to do a follow-up batched `get_quotes` for the union of tickers and
+    overwrite each MoverEntry's volume from the quote block (where
+    `totalVolume` IS per-symbol)."""
     mock = AsyncMock()
     mock.get_movers = AsyncMock(
         return_value=_make_response(200, SAMPLE_MOVERS_RESPONSE_VOLUME)
     )
+    mock.get_quotes = AsyncMock(
+        return_value=_make_response(
+            200,
+            _multi_quote_response({
+                "NVDA": 75_000_000,
+                "AAPL": 50_000_000,
+            }),
+        )
+    )
     client = _client_with(mock)
     movers = await client.get_movers()
 
-    # most_active was populated from SAMPLE_MOVERS_RESPONSE_VOLUME — two rows
-    # with distinct per-symbol volumes; the index aggregate (3_277_188_666)
-    # must not leak in anywhere.
+    # The index aggregate must not leak in anywhere.
     volumes = {m.volume for m in movers.most_active}
     assert 3_277_188_666 not in volumes
+    # Volumes come from the quote backfill (NOT from the movers `volume` field,
+    # which is the broadcast aggregate).
     assert volumes == {75_000_000, 50_000_000}
 
     by_ticker = {m.ticker: m for m in movers.most_active}
@@ -580,6 +638,49 @@ async def test_get_movers_uses_per_symbol_volume_not_index_aggregate() -> None:
     assert by_ticker["NVDA"].change_pct == Decimal("1.33")
     assert by_ticker["NVDA"].volume == 75_000_000
     assert by_ticker["AAPL"].volume == 50_000_000
+
+    # The follow-up quote fetch is called exactly once for the union set.
+    assert mock.get_quotes.call_count == 1
+    quote_call = mock.get_quotes.call_args
+    assert sorted(quote_call.args[0]) == ["AAPL", "NVDA"]
+    assert quote_call.kwargs.get("fields") == ["quote", "fundamental"]
+
+
+async def test_get_movers_filters_gainers_by_positive_change() -> None:
+    """Regression: after-hours Schwab returned the same list of mixed-sign
+    tickers for every `sort` value, so INTC at -9.17% was labeled
+    `top_gainer`. The client-side filter must drop any row whose
+    `netPercentChange` sign doesn't match the requested category."""
+    # All three sort_orders return the same mixed-sign response.
+    mixed_response = {
+        "screeners": [
+            {"symbol": "AAA", "lastPrice": 10, "netPercentChange": 5.0},   # gainer
+            {"symbol": "BBB", "lastPrice": 10, "netPercentChange": -3.0},  # loser
+            {"symbol": "CCC", "lastPrice": 10, "netPercentChange": 2.0},   # gainer
+            {"symbol": "DDD", "lastPrice": 10, "netPercentChange": -1.0},  # loser
+        ]
+    }
+    mock = AsyncMock()
+    mock.get_movers = AsyncMock(return_value=_make_response(200, mixed_response))
+    mock.get_quotes = AsyncMock(
+        return_value=_make_response(
+            200,
+            _multi_quote_response({"AAA": 1, "BBB": 2, "CCC": 3, "DDD": 4}),
+        )
+    )
+    client = _client_with(mock)
+
+    movers = await client.get_movers()
+
+    # top_gainers: only AAA and CCC have positive change_pct.
+    assert {m.ticker for m in movers.top_gainers} == {"AAA", "CCC"}
+    # Sorted gainers-desc: AAA (+5%) before CCC (+2%).
+    assert [m.ticker for m in movers.top_gainers] == ["AAA", "CCC"]
+
+    # top_losers: only BBB and DDD have negative change_pct.
+    assert {m.ticker for m in movers.top_losers} == {"BBB", "DDD"}
+    # Sorted losers-asc (most-negative first): BBB (-3%) before DDD (-1%).
+    assert [m.ticker for m in movers.top_losers] == ["BBB", "DDD"]
 
 
 async def test_get_movers_handles_malformed_rows() -> None:
@@ -606,21 +707,31 @@ async def test_get_movers_handles_malformed_rows() -> None:
     }
     mock = AsyncMock()
     mock.get_movers = AsyncMock(return_value=_make_response(200, malformed))
+    # Mock the quote backfill so the test doesn't depend on the best-effort
+    # exception path.
+    mock.get_quotes = AsyncMock(
+        return_value=_make_response(
+            200,
+            _multi_quote_response({"GOOG": 5_000_000, "MSFT": 18_000_000}),
+        )
+    )
     client = _client_with(mock)
     movers = await client.get_movers()
 
-    # All four rows mapped without raising; defaults fill the blanks.
+    # All four rows in most_active mapped without raising; defaults fill blanks.
+    # (most_active doesn't filter by sign — any change is valid for "most active".)
     assert len(movers.most_active) == 4
     by_index = movers.most_active
     assert by_index[0].ticker == ""
     assert by_index[0].last == Decimal("0")
-    assert by_index[0].volume == 0
+    assert by_index[0].volume == 0  # empty ticker → no quote → volume 0
     assert by_index[1].ticker == "GOOG"
+    assert by_index[1].volume == 5_000_000  # from quote backfill
     assert by_index[2].ticker == ""  # None symbol → empty string
     assert by_index[2].volume == 0
     assert by_index[3].ticker == "MSFT"
     assert by_index[3].last == Decimal("410.5")
-    assert by_index[3].volume == 18_000_000
+    assert by_index[3].volume == 18_000_000  # from quote backfill
 
 
 async def test_health_check_returns_false_on_error() -> None:

@@ -112,8 +112,13 @@ def gex_per_strike(
             gamma_flip = strike
             break
 
-    if total_abs > 0 and abs(net_gex_f) < 0.01 * total_abs:
+    if total_abs == 0:
+        # Degenerate chain (no gamma contributions — e.g. after-hours when all
+        # contracts have gamma=0 and open_interest=0). Don't fabricate a
+        # directional regime — the dealer is structurally neutral.
         regime: GEXRegime = "flip_zone"
+    elif abs(net_gex_f) < 0.01 * total_abs:
+        regime = "flip_zone"
     elif net_gex_f > 0:
         regime = "positive_gamma"
     else:

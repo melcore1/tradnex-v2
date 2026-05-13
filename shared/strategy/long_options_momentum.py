@@ -95,10 +95,17 @@ class LongOptionsMomentum:
         self,
         full_analysis: FullAnalysis,
     ) -> RuleResult:
-        passed = bool(full_analysis.above_200_sma)
+        above = full_analysis.above_200_sma
+        passed = above is True
         sma200 = (
             full_analysis.sma200.latest if full_analysis.sma200 is not None else None
         )
+        if above is None:
+            failure_reason: str | None = "200-SMA unavailable (need 200+ daily bars)"
+        elif above:
+            failure_reason = None
+        else:
+            failure_reason = "price below or at 200-SMA on daily"
         return RuleResult(
             name="H1_above_200_sma",
             rule_type=RuleType.HARD,
@@ -109,7 +116,7 @@ class LongOptionsMomentum:
                 "close": str(full_analysis.spot),
                 "sma200": str(sma200) if sma200 is not None else None,
             },
-            failure_reason=None if passed else "price below or at 200-SMA on daily",
+            failure_reason=failure_reason,
         )
 
     def _evaluate_h2_ema_alignment(

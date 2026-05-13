@@ -63,8 +63,11 @@ class FullOptionsAnalysis(BaseModel):
     second_order_greeks_atm: SecondOrderGreeksResult
     net_chain_greeks: NetChainGreeksResult
 
-    iv_rank: IVRankResult
-    iv_percentile: IVPercentileResult
+    # Nullable: when the chain contains no call contracts with DTE > 14 (e.g.
+    # an after-hours scout pulled an expiry-day-only chain), the IV selector
+    # raises and these go null rather than emitting a 0DTE 500%+ reading.
+    iv_rank: IVRankResult | None
+    iv_percentile: IVPercentileResult | None
     skew: SkewResult | None
     term_structure: TermStructureResult | None
     vrp: VRPResult | None
@@ -86,7 +89,7 @@ class FullOptionsAnalysis(BaseModel):
             parts.append(f"call wall {self.gex.call_wall}")
         if self.gex.put_wall is not None:
             parts.append(f"put wall {self.gex.put_wall}")
-        if self.iv_rank.rank is not None:
+        if self.iv_rank is not None and self.iv_rank.rank is not None:
             parts.append(
                 f"IV rank {self.iv_rank.rank} "
                 f"({self.iv_rank.regime if self.iv_rank.regime else 'n/a'})"
@@ -105,34 +108,34 @@ class FullOptionsAnalysis(BaseModel):
         return ", ".join(parts)
 
 
-def _select_current_iv_contract(
-    chain: OptionsChain, atm_strike: Decimal
-) -> OptionContract:
-    """Pick the ATM call whose DTE is in [21, 45] for stable IV-rank input.
+def _select_current_iv_contract(chain: OptionsChain) -> OptionContract:
+    """Pick a call contract whose IV is a stable input to IV rank / term structure.
 
-    Falls back through progressively broader windows when the preferred range
-    is empty (common in 0-14 DTE chains pulled by scout)."""
-    calls_at_strike = [
-        c
-        for c in chain.contracts
-        if c.contract_type == "call" and c.strike == atm_strike
-    ]
-    # Standard window: 21-45 DTE is the industry convention (tastytrade, IBKR) for
-    # the "current IV" series stored in daily_iv_snapshots.atm_iv. Picking outside
-    # this window (e.g. a 1-DTE row whose annualized IV is 5.0+) breaks IV rank,
-    # term-structure scale, and expected-move comparisons against history.
-    preferred = [c for c in calls_at_strike if 21 <= c.dte <= 45]
-    if preferred:
-        return min(preferred, key=lambda c: abs(c.dte - 30))
-    # Widen: anything > 14 DTE (skip the 0-DTE / 1-DTE rows whose IV is unusable)
-    mid = [c for c in calls_at_strike if c.dte > 14]
-    if mid:
-        return min(mid, key=lambda c: abs(c.dte - 30))
-    # Last resort: existing behaviour (anything > 0 DTE)
-    fallback = [c for c in calls_at_strike if c.dte > 0]
-    if fallback:
-        return min(fallback, key=lambda c: c.dte)
-    return chain.contracts[0]
+    Preference: closest expiry to 30 DTE in the [21, 45] window, then closest
+    strike to spot within that expiry. Widens to (14, ∞) DTE only if the
+    preferred window is empty. Picks ATM **per expiry** rather than at a
+    chain-wide global strike — longer expiries have wider strike spacing, so
+    the global ATM strike often doesn't exist there and the previous selector
+    silently fell back to a 1-DTE row whose annualized IV reads as 500%+.
+
+    Raises:
+        InsufficientChainError: when no call contract with DTE > 14 exists
+            (e.g. chain only contains 0-DTE / 1-DTE pinning rows).
+    """
+    spot = chain.spot_at_fetch
+    calls = [c for c in chain.contracts if c.contract_type == "call"]
+    if not calls:
+        raise InsufficientChainError("Chain has no call contracts for IV selection")
+
+    preferred = [c for c in calls if 21 <= c.dte <= 45]
+    pool = preferred or [c for c in calls if c.dte > 14]
+    if not pool:
+        raise InsufficientChainError(
+            "No call contracts with DTE > 14 for stable current-IV selection"
+        )
+    target_dte = min({c.dte for c in pool}, key=lambda d: abs(d - 30))
+    in_expiry = [c for c in pool if c.dte == target_dte]
+    return min(in_expiry, key=lambda c: abs(c.strike - spot))
 
 
 def compute_options_analysis(
@@ -146,16 +149,31 @@ def compute_options_analysis(
     spot = chain.spot_at_fetch
     gex_full = gex_per_strike(chain)
     gex_per_exp = gex_by_expiration(chain)
-
-    # ATM front-month contract for second-order Greeks demo
-    atm_strike = min({c.strike for c in chain.contracts}, key=lambda s: abs(s - spot))
-    atm_call = _select_current_iv_contract(chain, atm_strike)
-    second_order = second_order_greeks(atm_call, spot=spot)
     nc = net_chain_greeks(chain)
 
-    current_iv = atm_call.iv
-    rank_r = iv_rank(chain.underlying, current_iv, conn, lookback_days=iv_rank_lookback_days)
-    pct_r = iv_percentile(chain.underlying, current_iv, conn, lookback_days=iv_rank_lookback_days)
+    # Second-order Greeks pinned to whichever call is closest to spot in the
+    # chain; falls back to first contract if no calls exist. The IV-rank
+    # selection is stricter (>14 DTE only) and lives separately below.
+    if chain.contracts:
+        atm_for_greeks = min(chain.contracts, key=lambda c: abs(c.strike - spot))
+    else:
+        atm_for_greeks = chain.contracts[0]
+    second_order = second_order_greeks(atm_for_greeks, spot=spot)
+
+    rank_r: IVRankResult | None
+    pct_r: IVPercentileResult | None
+    try:
+        atm_call = _select_current_iv_contract(chain)
+        current_iv = atm_call.iv
+        rank_r = iv_rank(
+            chain.underlying, current_iv, conn, lookback_days=iv_rank_lookback_days
+        )
+        pct_r = iv_percentile(
+            chain.underlying, current_iv, conn, lookback_days=iv_rank_lookback_days
+        )
+    except InsufficientChainError:
+        rank_r = None
+        pct_r = None
 
     skew_r: SkewResult | None
     try:

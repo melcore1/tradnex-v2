@@ -221,20 +221,24 @@ def term_structure(chain: OptionsChain) -> TermStructureResult:
 
     points: list[tuple[int, Decimal]] = []
     for exp in chain.expirations:
+        dte = (exp - today).days
+        # Skip 0/1-DTE pinning rows — their annualized IV diverges and pollutes
+        # the front_month_iv reading (we saw front_month_iv=3.29 = 329%
+        # because the 1-DTE expiry was picked as "front").
+        if dte <= 14:
+            continue
         contracts = chain.for_expiration(exp)
         if not contracts:
             continue
-        atm_strike = min({c.strike for c in contracts}, key=lambda s: abs(s - spot))
-        same = [c for c in contracts if c.strike == atm_strike]
-        if not same:
-            continue
-        atm_iv = sum((c.iv for c in same), Decimal("0")) / Decimal(len(same))
-        dte = (exp - today).days
-        points.append((dte, atm_iv))
+        # Pick ATM by nearest strike to spot per expiry (rather than exact-match
+        # to a chain-wide global strike) — longer expiries have wider strike
+        # spacing, so a global strike often doesn't exist there.
+        atm = min(contracts, key=lambda c: abs(c.strike - spot))
+        points.append((dte, atm.iv))
 
     if len(points) < 2:
         raise InsufficientChainError(
-            f"Term structure needs >= 2 expirations with ATM IV; got {len(points)}"
+            f"Term structure needs >= 2 expirations with DTE > 14; got {len(points)}"
         )
 
     points.sort(key=lambda p: p[0])

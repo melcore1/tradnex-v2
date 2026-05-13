@@ -71,3 +71,17 @@ async def test_full_analysis_crossover_is_valid_state(nvda_bars) -> None:
     fa = await compute_full_analysis("NVDA", nvda_bars)
     assert fa.ema9_21_crossover in ("crossed_above", "crossed_below", "none")
     assert fa.sma50_200_crossover in ("crossed_above", "crossed_below", "none")
+
+
+async def test_full_analysis_above_200_sma_is_none_when_bars_insufficient() -> None:
+    """Regression: scout NVDA with days_history=90 returned sma200:null but
+    above_200_sma:false. Downstream the 6-rule strategy's H1 silently failed
+    on every <200-bar ticker. The flag must be tri-state — None when
+    insufficient bars, distinguishable from "price below 200-SMA"."""
+    client = MockDataClient(seed=42)
+    bars = await client.get_bars("NVDA", timeframe="1d", limit=90)
+    fa = await compute_full_analysis("NVDA", bars, timeframe="1d")
+    assert fa.sma200 is None
+    assert fa.above_200_sma is None, (
+        f"above_200_sma must be None when sma200 is None, got {fa.above_200_sma!r}"
+    )

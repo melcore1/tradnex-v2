@@ -105,12 +105,17 @@ def _trend(full: FullAnalysis, t: RegimeThresholds) -> tuple[TrendRegime, list[s
     used.append("adx_strength")
     used.append("ema_alignment")
     used.append("above_200_sma")
-    if adx_val >= t.adx_strong_trend and direction == "bullish" and above_200 and ema9_above:
+    if (
+        adx_val >= t.adx_strong_trend
+        and direction == "bullish"
+        and above_200 is True
+        and ema9_above
+    ):
         return "bullish", used
     if (
         adx_val >= t.adx_strong_trend
         and direction == "bearish"
-        and not above_200
+        and above_200 is False
         and not ema9_above
     ):
         return "bearish", used
@@ -135,7 +140,7 @@ def _gamma(options: FullOptionsAnalysis | None) -> tuple[GammaRegime, list[str]]
 
 
 def _iv(options: FullOptionsAnalysis | None) -> tuple[IVRegimeLabel, list[str]]:
-    if options is None or options.iv_rank.regime is None:
+    if options is None or options.iv_rank is None or options.iv_rank.regime is None:
         return "unknown", []
     return options.iv_rank.regime, ["iv_rank_regime"]
 

@@ -343,13 +343,19 @@ async def _cmd_analyze_options(client: MarketDataClient, args: argparse.Namespac
     print()
 
     print("IV:")
-    print(
-        f"  IV rank:       {oa.iv_rank.rank} ({oa.iv_rank.regime}, "
-        f"{oa.iv_rank.data_points} pts over {oa.iv_rank.lookback_days}d)"
-    )
-    print(
-        f"  IV percentile: {oa.iv_percentile.percentile}"
-    )
+    if oa.iv_rank is not None:
+        print(
+            f"  IV rank:       {oa.iv_rank.rank} ({oa.iv_rank.regime}, "
+            f"{oa.iv_rank.data_points} pts over {oa.iv_rank.lookback_days}d)"
+        )
+    else:
+        print("  IV rank:       n/a (no call contracts with DTE > 14 in chain)")
+    if oa.iv_percentile is not None:
+        print(
+            f"  IV percentile: {oa.iv_percentile.percentile}"
+        )
+    else:
+        print("  IV percentile: n/a")
     if oa.skew is not None:
         print(
             f"  skew:          put25Δ {oa.skew.put_25d_iv} / call25Δ {oa.skew.call_25d_iv}  "

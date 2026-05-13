@@ -66,7 +66,11 @@ class FullAnalysis(BaseModel):
     adx: ADXResult
     ema9_21_crossover: CrossoverState
     sma50_200_crossover: CrossoverState
-    above_200_sma: bool
+    # Tri-state: True/False when 200+ bars available, None when we can't compute
+    # SMA200 yet (e.g. scout called with days_history < 200). Downstream consumers
+    # must distinguish "price below 200-SMA" (False) from "insufficient data"
+    # (None) before treating this as a strategy gate.
+    above_200_sma: bool | None
 
     atr: ATRResult
     bollinger: BollingerResult
@@ -87,7 +91,10 @@ class FullAnalysis(BaseModel):
         parts.append(f"RSI {self.rsi.latest} {self.rsi.trend}")
         macd_state = "bullish" if self.macd.line_above_signal else "bearish"
         parts.append(f"MACD {macd_state} {self.macd.histogram_trend}")
-        parts.append("above 200-SMA" if self.above_200_sma else "below 200-SMA")
+        if self.above_200_sma is None:
+            parts.append("200-SMA n/a")
+        else:
+            parts.append("above 200-SMA" if self.above_200_sma else "below 200-SMA")
         parts.append(
             "EMA9>EMA21" if self.ema9.latest > self.ema21.latest else "EMA9<EMA21"
         )
@@ -124,7 +131,7 @@ async def compute_full_analysis(
     ema21_r = ema(bars, period=21)
     sma50_r = sma(bars, period=50)
     sma200_r: SMAResult | None
-    above_200 = False
+    above_200: bool | None = None
     if len(bars) >= 200:
         sma200_r = sma(bars, period=200)
         above_200 = Decimal(str(bars[-1].close)) > sma200_r.latest
