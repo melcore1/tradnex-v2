@@ -46,9 +46,19 @@ def _fresh_app() -> Any:
 def test_issue_jwt_returns_oauth_token_response() -> None:
     body = issue_jwt(REAL_KEY, client_id="claude")
     assert body["token_type"] == "Bearer"
-    assert body["expires_in"] == 3600
+    # 30-day default lifetime — avoids the every-hour re-auth dance Claude.ai
+    # was triggering on close-tab / cross-device cold starts with the prior
+    # 1-hour TTL. Rotate `mcp_api_key` to invalidate outstanding JWTs early.
+    assert body["expires_in"] == 60 * 60 * 24 * 30
     assert "access_token" in body
     assert body["scope"] == "analytics:read"
+
+
+def test_issue_jwt_respects_explicit_lifetime() -> None:
+    """Callers can still request a shorter lifetime (e.g. for CLI tests or
+    one-off short-lived tokens)."""
+    body = issue_jwt(REAL_KEY, client_id="claude", lifetime_seconds=300)
+    assert body["expires_in"] == 300
 
 
 def test_verify_jwt_round_trip() -> None:

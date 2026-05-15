@@ -20,8 +20,15 @@ the same ``mcp_api_key`` as the signing key. ``MCPApiKeyVerifier`` accepts
 both these JWTs and raw API keys for backwards compat.
 
 Auth codes are stored process-local with a 5-minute expiry; single-use. JWT
-lifetime is 1 hour. No refresh tokens (Claude.ai re-runs the grant when its
-cached access token expires).
+lifetime is 30 days. No refresh tokens — Claude.ai's connector cache evicts
+its access token periodically (and on close-tab / new-device), and our prior
+1-hour lifetime caused a full re-auth dance on essentially every cold start.
+30 days is fine for a single-user trusted deployment: the JWT is signed with
+``mcp_api_key`` and ``services.mcp.cli rotate-mcp-api-key`` invalidates every
+outstanding token immediately. So we trade the re-auth tax for the cost of
+"a leaked token lasts up to 30 days," which is mitigated by the user being
+the only holder of the key + the token traveling over HTTPS (Cloudflare
+Tunnel) end-to-end.
 """
 
 from __future__ import annotations
@@ -35,7 +42,7 @@ from typing import Any
 import jwt
 
 JWT_ALGORITHM = "HS256"
-JWT_LIFETIME_SECONDS = 3600  # 1 hour
+JWT_LIFETIME_SECONDS = 60 * 60 * 24 * 30  # 30 days
 TOKEN_TYPE = "Bearer"
 
 AUTH_CODE_LIFETIME_SECONDS = 300  # 5 min
