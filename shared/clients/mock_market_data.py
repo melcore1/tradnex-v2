@@ -413,6 +413,21 @@ class MockDataClient(MarketDataClient):
                     oi_base = 5000 * np.exp(-(distance**2) / 4)
                     oi = int(oi_base * self._rng.uniform(0.5, 1.5))
                     vol = int(oi * self._rng.uniform(0.05, 0.25))
+                    mid_price = (bid + ask) / 2
+                    # Mark ≈ mid (drift in/out a few cents for realism)
+                    mark_price = mid_price + self._rng.normal(0.0, 0.02)
+                    # Theoretical value ≈ BS price (the model output); add a
+                    # small noise so mispricing_pct in the formatter is non-zero
+                    # in tests.
+                    theoretical = price + self._rng.normal(0.0, 0.05)
+                    # Sizes scale with OI (rough but realistic enough for mocks).
+                    bid_sz = int(max(1, oi * self._rng.uniform(0.01, 0.05)))
+                    ask_sz = int(max(1, oi * self._rng.uniform(0.01, 0.05)))
+                    # Weekly Fridays (Schwab tags STANDARD on monthly, WEEKLY on others).
+                    is_third_friday = (
+                        exp.weekday() == 4 and 15 <= exp.day <= 21
+                    )
+                    exp_type = "STANDARD" if is_third_friday else "WEEKLY"
                     contracts.append(
                         OptionContract(
                             symbol=_occ_symbol(ticker, exp, ctype, k),
@@ -433,6 +448,15 @@ class MockDataClient(MarketDataClient):
                             theta=Decimal(str(round(greeks["theta"], 4))),
                             vega=Decimal(str(round(greeks["vega"], 4))),
                             rho=Decimal(str(round(greeks["rho"], 4))),
+                            mark=_to_decimal(mark_price),
+                            bid_size=bid_sz,
+                            ask_size=ask_sz,
+                            theoretical_value=_to_decimal(theoretical),
+                            expiration_type=exp_type,
+                            is_non_standard=False,
+                            percent_change=Decimal(
+                                str(round(self._rng.normal(0.0, 5.0), 2))
+                            ),
                         )
                     )
 

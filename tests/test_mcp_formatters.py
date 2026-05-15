@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 
-from services.mcp.formatters import _first_after_dte
+from services.mcp.formatters import _dte_bucket, _first_after_dte
 
 
 def test_first_after_dte_skips_short_dte_entries() -> None:
@@ -62,3 +62,22 @@ def test_first_after_dte_uses_today_default_when_unset() -> None:
         today + timedelta(days=30): "keep",
     }
     assert _first_after_dte(by_exp) == "keep"
+
+
+# ---------- _dte_bucket ----------
+
+
+def test_dte_bucket_boundary_cases() -> None:
+    """The DTE bucket function maps each contract to a categorical
+    label the LLM can reason about. Boundaries follow the tastytrade
+    convention: sweet_spot starts at 21 DTE inclusive."""
+    assert _dte_bucket(0) == "0DTE"
+    assert _dte_bucket(1) == "lottery"
+    assert _dte_bucket(7) == "lottery"
+    assert _dte_bucket(8) == "high_gamma"
+    assert _dte_bucket(20) == "high_gamma"
+    assert _dte_bucket(21) == "sweet_spot"
+    assert _dte_bucket(30) == "sweet_spot"
+    assert _dte_bucket(45) == "sweet_spot"
+    assert _dte_bucket(46) == "positional"
+    assert _dte_bucket(120) == "positional"

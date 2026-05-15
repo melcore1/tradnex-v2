@@ -341,6 +341,80 @@ async def test_get_options_chain_maps_calls_and_puts() -> None:
     assert call.symbol == "AAPL  260515C00228000".strip()
 
 
+async def test_get_options_chain_extracts_new_decoration_fields() -> None:
+    """Phase 8.7g — new Schwab fields surfaced for the option_chain tool:
+    mark, bid_size, ask_size, theoreticalOptionValue, expirationType,
+    nonStandard, percentChange."""
+    body = {
+        "symbol": "AAPL",
+        "underlying": {"last": 228.50},
+        "callExpDateMap": {
+            "2026-05-15:9": {
+                "228.0": [
+                    {
+                        "putCall": "CALL",
+                        "symbol": "AAPL  260515C00228000",
+                        "bid": 2.50,
+                        "ask": 2.60,
+                        "mark": 2.55,
+                        "bidSize": 12,
+                        "askSize": 7,
+                        "last": 2.55,
+                        "totalVolume": 1500,
+                        "openInterest": 8000,
+                        "volatility": 28.5,
+                        "delta": 0.52,
+                        "gamma": 0.04,
+                        "theta": -0.10,
+                        "vega": 0.15,
+                        "rho": 0.08,
+                        "strikePrice": 228.0,
+                        "expirationDate": 1715731200000,
+                        "daysToExpiration": 9,
+                        "theoreticalOptionValue": 2.58,
+                        "expirationType": "WEEKLY",
+                        "nonStandard": False,
+                        "percentChange": 4.12,
+                    }
+                ],
+            }
+        },
+        "putExpDateMap": {},
+    }
+    mock = AsyncMock()
+    mock.get_option_chain = AsyncMock(return_value=_make_response(200, body))
+    client = _client_with(mock)
+    chain = await client.get_options_chain("AAPL", contract_type="call")
+    call = chain.calls_only()[0]
+    assert call.mark == Decimal("2.55")
+    assert call.bid_size == 12
+    assert call.ask_size == 7
+    assert call.theoretical_value == Decimal("2.58")
+    assert call.expiration_type == "WEEKLY"
+    assert call.is_non_standard is False
+    assert call.percent_change == Decimal("4.12")
+
+
+async def test_get_options_chain_handles_missing_new_fields() -> None:
+    """When Schwab omits the optional decoration fields (older responses
+    or stripped payloads), the contract still parses without crashes —
+    new fields default to None / 0 / False."""
+    mock = AsyncMock()
+    mock.get_option_chain = AsyncMock(
+        return_value=_make_response(200, SAMPLE_CHAIN_RESPONSE)
+    )
+    client = _client_with(mock)
+    chain = await client.get_options_chain("AAPL", contract_type="call")
+    call = chain.calls_only()[0]
+    assert call.mark is None
+    assert call.bid_size == 0
+    assert call.ask_size == 0
+    assert call.theoretical_value is None
+    assert call.expiration_type is None
+    assert call.is_non_standard is False
+    assert call.percent_change is None
+
+
 async def test_get_options_chain_handles_iso_expiration_date() -> None:
     """Regression: Schwab Trader API returns ``expirationDate`` as an ISO-format
     string (e.g. ``"2026-05-19T20:00:00.000+00:00"``), NOT as int millis-epoch.

@@ -44,6 +44,7 @@ from services.mcp.tools.correlation_check import (
 from services.mcp.tools.market_overview import (
     market_overview as _market_overview,
 )
+from services.mcp.tools.option_chain import option_chain as _option_chain
 from services.mcp.tools.position_check import position_check as _position_check
 from services.mcp.tools.quick_check import quick_check as _quick_check
 from services.mcp.tools.regime_check import regime_check as _regime_check
@@ -124,6 +125,51 @@ async def scout(
     """
     client = build_data_client()
     return await _scout(ticker, days_history, client)
+
+
+@mcp.tool()
+async def option_chain(
+    ticker: str,
+    min_dte: int = 21,
+    max_dte: int = 45,
+    contract_type: Literal["call", "put", "both"] = "both",
+    delta_min: float = 0.20,
+    delta_max: float = 0.80,
+    expiration: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Filtered options chain decorated for LLM contract picking.
+
+    Defaults: 21–45 DTE, |delta| 0.20–0.80 — the tastytrade directional
+    sweet spot. Override for weeklies (max_dte=7), credit-spread shorts
+    (delta_min=0.15, delta_max=0.25), or to anchor on a specific expiry
+    (expiration="2026-06-19").
+
+    Returns a list of contracts (raw fields + computed signals:
+    liquidity_pass, probability_itm, breakeven, mispricing_pct vs
+    theoretical_value, dte_bucket, unusual_activity_flagged) plus a
+    chain-wide `context` block (spot, iv_rank, expected_move_1sigma_pct,
+    regime labels).
+
+    Pick one contract from the response based on:
+      • liquidity_pass=true (otherwise execution risk)
+      • dte_bucket="sweet_spot" for directional, "high_gamma" for tight catalysts
+      • delta around 0.55-0.70 for directional, 0.15-0.25 for credit-spread short
+      • mispricing_pct close to 0 (negative = market underpriced vs theoretical)
+      • unusual_activity_flagged=true is a smart-money signal worth weighting
+    """
+    client = build_data_client()
+    return await _option_chain(
+        ticker,
+        min_dte=min_dte,
+        max_dte=max_dte,
+        contract_type=contract_type,
+        delta_min=delta_min,
+        delta_max=delta_max,
+        expiration=expiration,
+        limit=limit,
+        client=client,
+    )
 
 
 @mcp.tool()

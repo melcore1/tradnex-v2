@@ -327,6 +327,16 @@ class SchwabDataClient(MarketDataClient):
         raw_iv = contract_data.get("volatility") or 0.0
         iv_decimal = Decimal(str(raw_iv)) / Decimal("100")
         exp_date = _parse_expiration_date(contract_data.get("expirationDate"))
+        # Phase 8.7g — additional fields used by the option_chain MCP tool.
+        # All are optional in the Schwab response so we only extract when present.
+        mark_raw = contract_data.get("mark")
+        mark = _decimal(mark_raw) if mark_raw is not None else None
+        theo_raw = contract_data.get("theoreticalOptionValue")
+        theoretical_value = _decimal(theo_raw) if theo_raw is not None else None
+        pct_change_raw = contract_data.get("percentChange")
+        percent_change = (
+            _decimal(pct_change_raw) if pct_change_raw is not None else None
+        )
         return OptionContract(
             symbol=contract_data.get("symbol", "").strip(),
             underlying=underlying,
@@ -346,6 +356,13 @@ class SchwabDataClient(MarketDataClient):
             theta=_decimal(contract_data.get("theta", 0)),
             vega=_decimal(contract_data.get("vega", 0)),
             rho=_decimal(contract_data.get("rho", 0)),
+            mark=mark,
+            bid_size=int(contract_data.get("bidSize", 0) or 0),
+            ask_size=int(contract_data.get("askSize", 0) or 0),
+            theoretical_value=theoretical_value,
+            expiration_type=contract_data.get("expirationType"),
+            is_non_standard=bool(contract_data.get("nonStandard", False)),
+            percent_change=percent_change,
         )
 
     async def get_options_chain(

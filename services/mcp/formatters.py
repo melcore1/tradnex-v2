@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from shared.analytics.full_analysis import FullAnalysis
     from shared.analytics.options.full_options_analysis import FullOptionsAnalysis
     from shared.analytics.regime import RegimeState
-    from shared.schemas.market import MoverEntry, Quote
+    from shared.schemas.market import MoverEntry, OptionContract, OptionsChain, Quote
 
 
 def _s(value: Decimal | float | int | None) -> str | None:
@@ -253,4 +253,145 @@ def format_mover(entry: MoverEntry) -> dict[str, Any]:
         "change_pct": _s(entry.change_pct),
         "volume": entry.volume,
         "category": entry.category,
+    }
+
+
+def _dte_bucket(dte: int) -> str:
+    """Bucket DTE into named tiers so the LLM can reason categorically.
+
+    - 0DTE      : same-day expiry (pinning row, theta-extreme)
+    - lottery   : 1-7 DTE — weekly OTM speculation
+    - high_gamma: 8-20 DTE — directional convexity but theta-accelerating
+    - sweet_spot: 21-45 DTE — tastytrade convention for directional + premium
+    - positional: 46+ DTE — longer-dated, more vega exposure
+    """
+    if dte == 0:
+        return "0DTE"
+    if dte <= 7:
+        return "lottery"
+    if dte < 21:
+        return "high_gamma"
+    if dte <= 45:
+        return "sweet_spot"
+    return "positional"
+
+
+def format_option_contract(
+    c: OptionContract,
+    analysis: FullOptionsAnalysis | None = None,
+) -> dict[str, Any]:
+    """One contract + computed signals for LLM ranking.
+
+    Decoration covers:
+      - dte_bucket (categorical time bucket)
+      - liquidity_pass (boolean execution-readiness gate)
+      - probability_itm (≈ |delta|, industry-standard approximation)
+      - breakeven (strike ± mid)
+      - mispricing_pct (mid vs Schwab's theoretical_value, signed; None
+        when theoretical_value isn't returned)
+      - unusual_activity_flagged (cross-reference with
+        UnusualActivityResult.flagged_contracts when analysis is provided)
+    """
+    mid = c.mid
+    spread_pct = (
+        float(c.spread_pct) if c.spread_pct is not None else 100.0
+    )
+    mispricing_pct = None
+    if c.theoretical_value is not None and mid > 0 and c.theoretical_value != 0:
+        mispricing_pct = float(
+            ((mid - c.theoretical_value) / c.theoretical_value) * Decimal("100")
+        )
+    breakeven = (
+        c.strike + mid if c.contract_type == "call"
+        else c.strike - mid
+    )
+    abs_delta = abs(float(c.delta))
+    unusual = (
+        analysis is not None
+        and any(
+            f.symbol == c.symbol
+            for f in analysis.unusual_activity.flagged_contracts
+        )
+    )
+    return {
+        # Identity
+        "symbol": c.symbol,
+        "contract_type": c.contract_type,
+        "strike": _s(c.strike),
+        "expiration": c.expiration.isoformat(),
+        "dte": c.dte,
+        "dte_bucket": _dte_bucket(c.dte),
+        "expiration_type": c.expiration_type,
+        "is_non_standard": c.is_non_standard,
+        # Pricing
+        "bid": _s(c.bid),
+        "ask": _s(c.ask),
+        "mid": _s(mid),
+        "last": _s(c.last),
+        "mark": _s(c.mark),
+        "theoretical_value": _s(c.theoretical_value),
+        "mispricing_pct": (
+            round(mispricing_pct, 2) if mispricing_pct is not None else None
+        ),
+        "percent_change": _s(c.percent_change),
+        # Liquidity
+        "volume": c.volume,
+        "open_interest": c.open_interest,
+        "bid_size": c.bid_size,
+        "ask_size": c.ask_size,
+        "spread_pct": round(spread_pct, 2),
+        "liquidity_pass": (
+            spread_pct < 5.0
+            and c.open_interest >= 100
+            and c.volume >= 10
+        ),
+        # Greeks
+        "iv": _s(c.iv),
+        "delta": _s(c.delta),
+        "gamma": _s(c.gamma),
+        "theta": _s(c.theta),
+        "vega": _s(c.vega),
+        # Derived risk signals
+        "probability_itm": round(abs_delta, 4),
+        "breakeven": _s(breakeven),
+        "intrinsic_value": _s(c.intrinsic_value),
+        "extrinsic_value": _s(c.extrinsic_value),
+        "in_the_money": c.intrinsic_value > 0,
+        "unusual_activity_flagged": unusual,
+    }
+
+
+def format_chain_context(
+    chain: OptionsChain,
+    analysis: FullOptionsAnalysis,
+) -> dict[str, Any]:
+    """Chain-wide context block emitted alongside the contracts list.
+
+    Surfaces the spot + IV environment + regime labels so the LLM can
+    decide whether to buy or sell premium without making a second call.
+    """
+    front_em = _first_after_dte(analysis.expected_move_per_expiration)
+    return {
+        "spot": _s(chain.spot_at_fetch),
+        "iv_rank": (
+            _s(analysis.iv_rank.rank) if analysis.iv_rank else None
+        ),
+        "iv_rank_regime": (
+            analysis.iv_rank.regime if analysis.iv_rank else None
+        ),
+        "iv_percentile": (
+            _s(analysis.iv_percentile.percentile)
+            if analysis.iv_percentile else None
+        ),
+        "expected_move_1sigma_pct": (
+            _s(front_em.expected_move_pct) if front_em else None
+        ),
+        "term_structure_regime": (
+            analysis.term_structure.regime
+            if analysis.term_structure else None
+        ),
+        "gex_regime": analysis.gex.regime,
+        "skew_regime": (
+            analysis.skew.regime if analysis.skew else None
+        ),
     }

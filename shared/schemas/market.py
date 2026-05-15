@@ -85,6 +85,16 @@ class OptionContract(BaseModel):
     theta: Decimal
     vega: Decimal
     rho: Decimal
+    # Phase 8.7g — additional Schwab fields surfaced for the option_chain tool.
+    # All default to safe values so existing call sites and stored IV snapshots
+    # don't need migration.
+    mark: Decimal | None = None
+    bid_size: int = 0
+    ask_size: int = 0
+    theoretical_value: Decimal | None = None
+    expiration_type: str | None = None
+    is_non_standard: bool = False
+    percent_change: Decimal | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property

@@ -23,6 +23,7 @@ def _fresh_app() -> Any:
 EXPECTED_TOOLS = {
     "quick_check",
     "scout",
+    "option_chain",
     "market_overview",
     "regime_check",
     "correlation_check",
