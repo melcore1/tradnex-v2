@@ -118,6 +118,10 @@ def build_metadata(resource_url: str) -> dict[str, Any]:
         "issuer": base,
         "authorization_endpoint": f"{base}/authorize",
         "token_endpoint": f"{base}/oauth/token",
+        # RFC 7591 — some MCP clients (Cherry Studio) refuse to start unless
+        # DCR is advertised. Our /register is stateless PKCE-only; it mints
+        # a fresh client_id per call and issues no client_secret.
+        "registration_endpoint": f"{base}/register",
         "grant_types_supported": ["authorization_code", "client_credentials"],
         "response_types_supported": ["code"],
         "code_challenge_methods_supported": ["S256"],

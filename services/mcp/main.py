@@ -15,6 +15,8 @@ JSON-RPC protocol. Tools must be coroutines.
 from __future__ import annotations
 
 import logging
+import secrets
+import time
 from typing import Any, Literal
 from urllib.parse import urlparse
 
@@ -204,6 +206,63 @@ _ALLOWED_REDIRECT_PREFIXES = (
     "http://localhost",
     "http://127.0.0.1",
 )
+
+
+@mcp.custom_route("/register", methods=["POST"])  # type: ignore[untyped-decorator]
+async def oauth_register(request: Request) -> JSONResponse:
+    """RFC 7591 Dynamic Client Registration.
+
+    Some MCP clients (e.g. Cherry Studio) refuse to start when our
+    authorization-server metadata is advertised without a
+    ``registration_endpoint`` — they only know how to obtain client
+    credentials via DCR and don't expose a manual client_id field in
+    their UI. The error surfaces as "Incompatible auth server: does not
+    support dynamic client registration."
+
+    Our deployment is single-user and PKCE-only; we never validate
+    client_secret on the auth_code grant (PKCE is the actual check —
+    RFC 7636 §4.4). So DCR can be stateless: any caller asking to
+    register gets a fresh random ``client_id``, no ``client_secret``
+    is issued, and the actual security boundary stays at:
+
+    1. ``/authorize`` enforces the ``redirect_uri`` allowlist
+       (claude.ai / claude.com / http://localhost / http://127.0.0.1)
+    2. ``/authorize`` requires ``code_challenge_method=S256`` PKCE
+    3. ``/oauth/token`` requires the matching ``code_verifier``
+    4. The minted JWT is signed with ``mcp_api_key``; rotate the key
+       to invalidate every outstanding client + token in one shot.
+
+    Existing Claude.ai connector flows are unaffected — Claude.ai
+    already has a working client_id and never hits ``/register``.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    requested_redirects = body.get("redirect_uris") or []
+    if not isinstance(requested_redirects, list):
+        requested_redirects = []
+    client_name = str(body.get("client_name") or "anonymous-mcp-client")
+    scope = str(body.get("scope") or "analytics:read")
+
+    client_id = f"tradnex-mcp-{secrets.token_urlsafe(12)}"
+    issued_at = int(time.time())
+
+    response = {
+        "client_id": client_id,
+        "client_id_issued_at": issued_at,
+        "client_name": client_name,
+        "redirect_uris": requested_redirects,
+        "grant_types": ["authorization_code"],
+        "response_types": ["code"],
+        "token_endpoint_auth_method": "none",
+        "scope": scope,
+    }
+    logger.info("DCR: minted client_id=%s for name=%s", client_id, client_name)
+    return JSONResponse(response, status_code=201)
 
 
 @mcp.custom_route("/authorize", methods=["GET"])  # type: ignore[untyped-decorator]

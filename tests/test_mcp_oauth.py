@@ -107,6 +107,139 @@ def test_metadata_lists_both_grants() -> None:
     assert "client_secret_post" in md["token_endpoint_auth_methods_supported"]
 
 
+def test_metadata_advertises_registration_endpoint() -> None:
+    """RFC 7591 DCR — required for clients like Cherry Studio that refuse
+    to start when registration_endpoint is missing. Existing Claude.ai
+    flows ignore this field; they have a working client config already."""
+    md = build_metadata("https://scoutv2.meltradingmcp.uk")
+    assert md["registration_endpoint"].endswith("/register")
+
+
+# ---------- /register endpoint (RFC 7591 DCR) ----------
+
+
+def test_register_endpoint_mints_client_id(
+    db_with_env: sqlite3.Connection,
+) -> None:
+    """DCR is stateless — every call returns a fresh client_id, no
+    client_secret, PKCE-only (token_endpoint_auth_method=none)."""
+    seed_credential(db_with_env, "mcp_api_key", {"api_key": REAL_KEY})  # type: ignore[arg-type]
+    app = _fresh_app()
+    with TestClient(app) as client:
+        resp = client.post(
+            "/register",
+            json={
+                "client_name": "cherry-studio",
+                "redirect_uris": ["http://localhost:5173/oauth/callback"],
+            },
+        )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["client_id"].startswith("tradnex-mcp-")
+    assert body["token_endpoint_auth_method"] == "none"
+    assert "client_secret" not in body
+    assert body["redirect_uris"] == ["http://localhost:5173/oauth/callback"]
+    assert body["grant_types"] == ["authorization_code"]
+    assert body["response_types"] == ["code"]
+
+
+def test_register_endpoint_handles_empty_body(
+    db_with_env: sqlite3.Connection,
+) -> None:
+    """Some clients POST with no body. Don't crash — return a usable
+    client_id and an empty redirect_uris list."""
+    seed_credential(db_with_env, "mcp_api_key", {"api_key": REAL_KEY})  # type: ignore[arg-type]
+    app = _fresh_app()
+    with TestClient(app) as client:
+        resp = client.post("/register")
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["client_id"].startswith("tradnex-mcp-")
+    assert body["redirect_uris"] == []
+    assert body["client_name"] == "anonymous-mcp-client"
+
+
+def test_register_endpoint_mints_unique_ids_per_call(
+    db_with_env: sqlite3.Connection,
+) -> None:
+    seed_credential(db_with_env, "mcp_api_key", {"api_key": REAL_KEY})  # type: ignore[arg-type]
+    app = _fresh_app()
+    with TestClient(app) as client:
+        a = client.post("/register", json={}).json()
+        b = client.post("/register", json={}).json()
+    assert a["client_id"] != b["client_id"]
+
+
+def test_register_then_auth_code_flow_works_end_to_end(
+    db_with_env: sqlite3.Connection,
+) -> None:
+    """Full Cherry Studio scenario: DCR → /authorize → /oauth/token.
+
+    The minted client_id from /register is used by the subsequent
+    auth_code grant; the JWT comes back signed with mcp_api_key as
+    usual. No client_secret involved — PKCE is the actual check."""
+    import base64
+    import hashlib
+
+    seed_credential(db_with_env, "mcp_api_key", {"api_key": REAL_KEY})  # type: ignore[arg-type]
+    app = _fresh_app()
+
+    # PKCE pair
+    verifier = "verifier-for-cherry-studio-test-flow-of-correct-length"
+    challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
+        .rstrip(b"=")
+        .decode("ascii")
+    )
+
+    with TestClient(app) as client:
+        reg = client.post(
+            "/register",
+            json={
+                "client_name": "cherry-studio",
+                "redirect_uris": ["http://localhost:5173/oauth/callback"],
+            },
+        ).json()
+        client_id = reg["client_id"]
+
+        # /authorize returns a 302 with ?code=... — disable redirect follow.
+        authz = client.get(
+            "/authorize",
+            params={
+                "response_type": "code",
+                "client_id": client_id,
+                "redirect_uri": "http://localhost:5173/oauth/callback",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "state": "xyz",
+            },
+            follow_redirects=False,
+        )
+        assert authz.status_code == 302
+        location = authz.headers["location"]
+        # Extract code from "http://localhost:5173/oauth/callback?code=...&state=xyz"
+        code = location.split("code=")[1].split("&")[0]
+
+        token_resp = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "client_id": client_id,
+                "code": code,
+                "code_verifier": verifier,
+                "redirect_uri": "http://localhost:5173/oauth/callback",
+            },
+        )
+    assert token_resp.status_code == 200
+    body = token_resp.json()
+    assert body["token_type"] == "Bearer"
+    assert "access_token" in body
+    # JWT must verify against the stored mcp_api_key
+    claims = verify_jwt(body["access_token"], REAL_KEY)
+    assert claims is not None
+    assert claims["client_id"] == client_id
+
+
 # ---------- /oauth/token endpoint ----------
 
 
